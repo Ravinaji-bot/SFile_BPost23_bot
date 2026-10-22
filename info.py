@@ -300,6 +300,10 @@ def strip_bad_prefixes(text):
         w = re.escape(word)
         for _ in range(3):  # tag can be stacked / repeated
             before = out
+            # 0) channel tag + BAD_PREFIXES word at the very start
+            out = re.sub(
+                rf"^[\s{_ZERO_WIDTH}]*[{_TAG_EMOJI}]*\s*(?:(?i:join)\s+)?@\w+[\s._\-]*(?i:{w})(?:(?=[A-Z0-9])|[\s._\-\]\)]+)",
+                "", out, count=1)
             # 1) at the very start, after any symbol / emoji:  "❤️ arenaDrishyam", "(arena) Drishyam"
             out = re.sub(
                 rf"^[\s{_ZERO_WIDTH}]*[^\w\s]+\s*(?i:{w})(?!s(?:\W|$))[\s._\-\]\)]*",
