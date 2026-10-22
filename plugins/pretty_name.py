@@ -76,7 +76,7 @@ _SUBS_WORDS = r"\b(?:e-?subs?|m-?subs?|subtitles?|subs?|dubbed|org|dual|audio|mu
 def _prepare(raw):
     text = strip_bad_prefixes(raw)
     text = re.sub(r"\s+", " ", text).strip()                         # new lines inside a name
-    text = re.sub(r"^\s*(?:\[[^\]]*\]|@\w+|www\.\S+?\.\w{2,4})[\s\-_.]*", "", text)   # leading [Site] / @chan / www.x.com
+    text = re.sub(r"^\s*(?:(?i:join)\s+)?(?:\[[^\]]*\]|@\w+|www\.\S+?\.\w{2,4})[\s\-_.]*", "", text)   # leading [Site] / @chan / www.x.com
     m = _EXT.search(text)
     ext = ("." + (m.group(1) or "ts").lower()) if m else ""
     text = _EXT.sub("", text)
