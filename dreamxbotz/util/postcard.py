@@ -58,6 +58,13 @@ async def _send_post_poster_below(client, chat_id, poster, caption, post_btn, sp
     return None
 
 
+def _season_of(f):
+    try:
+        return extract_media_info(f.file_name, getattr(f, "caption", None) or "")["season"]
+    except Exception:
+        return None
+
+
 async def send_search_postcard(client, chat_id, files, tenbit=False):
     """Builds the post card (poster + title/audio/genres/quality box + download links)
     from the search result `files` and sends it to `chat_id`.
@@ -82,6 +89,16 @@ async def send_search_postcard(client, chat_id, files, tenbit=False):
         if not movie_files:
             return None
         base_name = base_name or "Unknown"
+        # a web series: every season gets its own card (the first card is returned, the others are sent after it)
+        seasons = sorted({f["season"] for f in movie_files if f["tag"] == "#SERIES" and f["season"] is not None},
+                         key=lambda x: int(x) if str(x).isdigit() else 0)
+        if len(seasons) > 1:
+            first = None
+            for sn in seasons[:4]:
+                part = [f for f in files if _season_of(f) == sn]
+                sent_one = await send_search_postcard(client, chat_id, part, tenbit)
+                first = first or sent_one
+            return first
         imdb_data = None
         try:
             first_name = movie_files[0]["filename"]

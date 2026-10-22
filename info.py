@@ -118,7 +118,7 @@ ABOVE_PREVIEW = is_enabled(environ.get('ABOVE_PREVIEW', "False"), False) # True 
 TMDB_API_KEY = environ.get('TMDB_API_KEY', '') # preffer to use your own tmdb API Key get it from https://www.themoviedb.org/settings/api
 TMDB_POSTER = is_enabled(environ.get('TMDB_POSTER', "True"), True) # Shows TMDB poster in notification msg
 LANDSCAPE_POSTER = is_enabled(environ.get('LANDSCAPE_POSTER', "True"), True) # Shows landscape poster in notification msg
-MOVIE_POST_WATERMARK = environ.get('MOVIE_POST_WATERMARK', '<a href="https://t.me/dreamxbotz">ᴅʀᴇᴀᴍxʙᴏᴛᴢ</a> 🤞') # Text shown after "💢 ᴘᴏᴡᴇʀᴇᴅ ʙʏ :" in the auto post, HTML allowed
+MOVIE_POST_WATERMARK = environ.get('MOVIE_POST_WATERMARK', '@DragonFireWorld') # Text shown in "𝑷𝒐𝒘𝒆𝒓𝒆𝒅 𝒃𝒚 ➥「 ... 」" at the end of every card, HTML allowed
 
 # ============================
 # Verification Settings
@@ -261,6 +261,7 @@ BAD_WORDS = {
     "tg",
     "original",
     "movie",
+    "boxoffice",
     "filmy4wap",
     "xyz",
     "world4ufree"
@@ -285,6 +286,33 @@ def norm_res(text):
     return re.sub(r"(?<![0-9A-Za-z])540\s*p(?![0-9A-Za-z])", "480p", text, flags=re.IGNORECASE)
 
 
+# Promo words that come in front of an @channel handle ("Join @x", "TG @x", "BoxOffice @x" ...). Add more here.
+BAD_PROMO_WORDS = ["join", "tg", "telegram", "boxoffice", "follow", "subscribe"]
+_QUOTES = "\"'\u201c\u201d\u2018\u2019\u00ab\u00bb`"
+_PROMO_START_RE = re.compile(
+    rf"^[\s{_ZERO_WIDTH}{_QUOTES}\[\(<]*[{_TAG_EMOJI}]*[\s{_ZERO_WIDTH}{_QUOTES}]*"
+    rf"(?i:(?:(?:{'|'.join(map(re.escape, BAD_PROMO_WORDS))})\b[\s:\-]*)*)"
+    rf"(?:@\w+[\s\-_.:|]*)+"
+    rf"(?i:(?:{'|'.join(map(re.escape, BAD_PREFIXES))})(?![a-z])[\s{_QUOTES}\]\)>\-_.:|]*)?"
+    rf"[{_QUOTES}\]\)>]*[\s\-_.:|]*"
+)
+# same idea for MongoDB ($regex, PCRE) - used by /cleanprefix to find already indexed files
+PROMO_DB_REGEX = r"^[^A-Za-z0-9]*((" + "|".join(map(re.escape, BAD_PROMO_WORDS)) + r")\b[\s:\-]*)*@\w+"
+
+_BAD_WORDS_LOWER = {w.lower() for w in BAD_WORDS}
+
+
+def strip_bad_words(text, keep=("original",)):
+    """Removes BAD_WORDS (whole words, any case, quotes / brackets around them ignored: '"TG', 'Join,') and
+    any word that starts with @ or www.  `keep` = bad words that other code still needs (ORG detection)."""
+    if not text or not isinstance(text, str):
+        return text
+    drop = _BAD_WORDS_LOWER - {k.lower() for k in keep}
+    words = [w for w in text.split()
+             if not (w.startswith(("@", "www.")) or w.strip(_QUOTES + "[](){}<>,.:;!-_|").lower() in drop)]
+    return " ".join(words)
+
+
 def strip_bad_prefixes(text):
     """Removes BAD_PREFIXES tags (e.g. "❤️ arena") from a file name / caption.
 
@@ -296,14 +324,17 @@ def strip_bad_prefixes(text):
     if not text or not isinstance(text, str):
         return text
     out = text
+    # 0) promo tag at the very start: \"Join @twg arena\" / \"TG @FILMFEVE\" / \"❤️ Join @chan\"  (quotes, emoji and a
+    #    glued BAD_PREFIXES tag included). A leading @handle is junk too.
+    for _ in range(3):
+        before = out
+        out = _PROMO_START_RE.sub("", out, count=1)
+        if out == before:
+            break
     for word in BAD_PREFIXES:
         w = re.escape(word)
         for _ in range(3):  # tag can be stacked / repeated
             before = out
-            # 0) channel tag + BAD_PREFIXES word at the very start
-            out = re.sub(
-                rf"^[\s{_ZERO_WIDTH}]*[{_TAG_EMOJI}]*\s*(?:(?i:join)\s+)?@\w+[\s._\-]*(?i:{w})(?:(?=[A-Z0-9])|[\s._\-\]\)]+)",
-                "", out, count=1)
             # 1) at the very start, after any symbol / emoji:  "❤️ arenaDrishyam", "(arena) Drishyam"
             out = re.sub(
                 rf"^[\s{_ZERO_WIDTH}]*[^\w\s]+\s*(?i:{w})(?!s(?:\W|$))[\s._\-\]\)]*",

@@ -5,7 +5,7 @@ import os
 from collections import OrderedDict
 import random
 import string
-from info import ALLOW_PORTRAIT_POSTER, norm_res, strip_bad_prefixes, ULTRA_FAST_MODE, MAX_LIST_ELM, BAD_WORDS, LONG_IMDB_DESCRIPTION, IS_VERIFY, MAX_B_TN, TUTORIAL, TUTORIAL_2, TUTORIAL_3, LOG_CHANNEL, TMDB_ON_SEARCH, TMDB_POSTER
+from info import ALLOW_PORTRAIT_POSTER, norm_res, strip_bad_prefixes, strip_bad_words, ULTRA_FAST_MODE, MAX_LIST_ELM, BAD_WORDS, LONG_IMDB_DESCRIPTION, IS_VERIFY, MAX_B_TN, TUTORIAL, TUTORIAL_2, TUTORIAL_3, LOG_CHANNEL, TMDB_ON_SEARCH, TMDB_POSTER
 from imdbkit import IMDBKit # pyrefly: ignore 
 import asyncio
 from pyrogram.types import Message, InlineKeyboardButton
@@ -838,15 +838,11 @@ def _display_name(file_name, caption=None):
 
 
 def clean_filename(file_name):
-    prefixes = ('[', '@', 'www.')
-    unwanted = {word.lower() for word in BAD_WORDS}
+    """Name without junk: bad prefixes / promo tags ("Join @chan", "TG @chan"), BAD_WORDS (join, tg, movie,
+    boxoffice ...; quotes around them are ignored) and @mentions / www links."""
     file_name = strip_bad_prefixes(file_name)
-    
-    file_name = ' '.join(
-        word for word in file_name.split()
-        if not (word.startswith(prefixes) or word.lower() in unwanted)
-    )
-    return file_name
+    cleaned = strip_bad_words(file_name, keep=())
+    return cleaned or file_name
 
 def get_size(size):
     units = ["Bytes", "KB", "MB", "GB", "TB", "PB", "EB"]

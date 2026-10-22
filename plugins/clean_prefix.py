@@ -9,7 +9,7 @@ import logging
 from pyrogram import Client, filters
 from pymongo import UpdateOne
 import html
-from info import OWNER_IDS, BAD_PREFIXES, MULTIPLE_DB, strip_bad_prefixes, SMALL_VIDEO_FILTER, MIN_FILE_SIZE, MIN_FILE_SIZE_MB
+from info import OWNER_IDS, BAD_PREFIXES, PROMO_DB_REGEX, MULTIPLE_DB, strip_bad_prefixes, SMALL_VIDEO_FILTER, MIN_FILE_SIZE, MIN_FILE_SIZE_MB
 from database.ia_filterdb import Media, Media2
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ def plan_update(doc: dict) -> dict:
 
 
 async def _process(collection, apply: bool) -> int:
-    pattern = "|".join(re.escape(p) for p in BAD_PREFIXES)
+    pattern = "|".join([PROMO_DB_REGEX] + [re.escape(p) for p in BAD_PREFIXES])
     if not pattern:
         return 0
     rx = {"$regex": pattern, "$options": "i"}

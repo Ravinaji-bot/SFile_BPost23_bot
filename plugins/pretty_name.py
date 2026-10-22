@@ -28,7 +28,7 @@ import unicodedata
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message
 
-from info import ADMINS, strip_bad_prefixes, NAME_BRAND_EMOJI, NAME_BRAND_TAG, norm_res
+from info import ADMINS, strip_bad_prefixes, strip_bad_words, NAME_BRAND_EMOJI, NAME_BRAND_TAG, norm_res
 from database.users_chats_db import db
 from utils import temp, clean_filename
 
@@ -75,8 +75,9 @@ _SUBS_WORDS = r"\b(?:e-?subs?|m-?subs?|subtitles?|subs?|dubbed|org|dual|audio|mu
 
 def _prepare(raw):
     text = strip_bad_prefixes(raw)
+    text = strip_bad_words(text) or text                              # join / tg / movie / boxoffice ... ("ORIGINAL" is kept: ORG tag)
     text = re.sub(r"\s+", " ", text).strip()                         # new lines inside a name
-    text = re.sub(r"^\s*(?:(?i:join)\s+)?(?:\[[^\]]*\]|@\w+|www\.\S+?\.\w{2,4})[\s\-_.]*", "", text)   # leading [Site] / @chan / www.x.com
+    text = re.sub(r"^\s*(?:\[[^\]]*\]|@\w+|www\.\S+?\.\w{2,4})[\s\-_.]*", "", text)   # leading [Site] / @chan / www.x.com
     m = _EXT.search(text)
     ext = ("." + (m.group(1) or "ts").lower()) if m else ""
     text = _EXT.sub("", text)
