@@ -267,7 +267,7 @@ Nᴀᴍᴇ : {}
 
 Mᴇꜱꜱᴀɢᴇ : <b>{}</b>"""
     
-    CAPTION = """<b><a href="https://t.me/Requiest_your_faw">{file_name}</a></b>\n\n<blockquote><b><i>𝑷𝒐𝒘𝒆𝒓𝒆𝒅 𝒃𝒚</i></b> ➥⌈ <a href="https://t.me/DragonFireWorld">@DragonFireWorld</a> ⌋</blockquote>"""
+    CAPTION = """<b><a href="https://t.me/Requiest_your_faw">{file_name}</a></b>\n\n<blockquote><b><i>𝑷𝒐𝒘𝒆𝒓𝒆𝒅 𝒃𝒚</i> ➥⌈ <a href="https://t.me/DragonFireWorld">@DragonFireWorld</a> ⌋</b></blockquote>"""
     
     MOVIE_UPDATE_NOTIFY_TXT = """
 </b><a href={poster_url}>📥</a><a href={imdb_url}>New {tag} Added</a></b>
