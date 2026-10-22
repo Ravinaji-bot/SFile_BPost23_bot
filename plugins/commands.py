@@ -134,7 +134,7 @@ def _spawn(coro):
     return t
 
 
-_MOVE_STEPS = (0, 3, 6, 3)  # har 10s update par aage kitne blank chars: text right jayega, phir wapas left
+_MOVE_STEPS = tuple(int(x) for x in __import__("os").environ.get("COUNTDOWN_MOVE", "0,2").replace(" ", "").split(",") if x.isdigit()) or (0,)
 
 
 def _countdown_text(sec, step=0):
