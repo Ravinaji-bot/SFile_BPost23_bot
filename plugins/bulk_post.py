@@ -253,6 +253,8 @@ async def _post_one(bot, qdoc, allow_noposter, chat_id=None, coll=None):
     # restricts TMDB search to the right media type and fetches the right
     # season's own poster/year instead of the show's overall one.
     season_num = next((f.get("season") for f in files if f.get("season") is not None), None)
+    if len({f.get("season") for f in files if f.get("season") is not None}) > 1:
+        season_num = None   # one card for ALL seasons -> look up the show itself (its year / poster), not one season
     is_series_hint = (qdoc.get("tag") == "#SERIES") or (season_num is not None)
     try:
         if TMDB_POSTER:

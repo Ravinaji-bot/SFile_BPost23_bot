@@ -2,6 +2,7 @@ import re
 import logging
 import asyncio
 import uuid
+import hashlib
 import base64
 from datetime import datetime
 from collections import defaultdict
@@ -225,14 +226,11 @@ def schedule_update(bot, base_name, delay=5):
     )
 
 def _series_group_key(base_name, season):
-    """DB key for a series file: each season gets its own key (and therefore
-    its own post) instead of every season of a show sharing one combined post."""
-    if season is None:
-        return base_name
-    try:
-        return f"{base_name} S{int(season):02d}"
-    except (TypeError, ValueError):
-        return f"{base_name} S{season}"
+    """DB key for a series file. ALL seasons of a show share ONE key (and therefore ONE card post);
+    the card lists the seasons one under the other (see _series_body_lines). `season` is kept in the
+    signature only so the callers did not have to change."""
+    return base_name
+
 
 def extract_media_info(filename: str, caption: str):
     filename = normalize(strip_bad_prefixes(clean_mentions_links(filename)).title())
@@ -679,7 +677,7 @@ async def update_movie_message(bot, base_name, chat_id=None, coll=None, tenbit=F
 DEFAULT_POST_FORMAT = {
     "bold": True,
     "watermark": MOVIE_POST_WATERMARK,
-    "link_text": "Click Hare",
+    "link_text": "Click Here",
     "divider": "────•˚•── ✦ ──•˚•────",
     "title_emoji": "🐉",
     "layout": "twoline",  # "twoline" = "✧ quality :\nlink (size)", "compact" = "quality : link"
@@ -839,6 +837,17 @@ def _quality_sort_key(q: str):
     return (1, 0, q or "")
 
 
+def _ep_sort_key(kv):
+    """Sort (season, episode) numerically: E01, E02 ... E10 (a plain string sort gave E01, E10, E02)."""
+    season, ep = kv[0]
+    try:
+        s_num = int(season) if season else 0
+    except (TypeError, ValueError):
+        s_num = 0
+    m = re.match(r"\d+", str(ep or ""))
+    return (s_num, int(m.group()) if m else 0, str(ep or ""))
+
+
 def _fmt_episode_label(ep) -> str:
     if not ep:
         return "Full Season"
@@ -855,6 +864,168 @@ def _fmt_episode_label(ep) -> str:
         return f"E{ep}"
 
 
+
+# ----------------------------------------------------------------------------- series card (all seasons in one post)
+def _parse_ep_range(ep):
+    """'5' -> (5, 5); '1-10' / '01-10' -> (1, 10); empty / unknown -> None (a full-season file)."""
+    if not ep:
+        return None
+    nums = [int(n) for n in re.findall(r"\d+", str(ep))]
+    if not nums:
+        return None
+    a, b = nums[0], nums[-1]
+    return (a, b) if a <= b else (b, a)
+
+
+def _cover_episodes(items):
+    """items: [(start, end, file)]. Returns the smallest list of them that still covers every episode any
+    of them covers (greedy interval cover): E01-10 + E10-20 + E01-07 + E07-14 -> E01-10 + E10-20."""
+    if not items:
+        return []
+    items = sorted(items, key=lambda t: (t[0], -t[1]))
+    chosen, i, n = [], 0, len(items)
+    while i < n:
+        first = items[i]
+        chosen.append(first)
+        cur_end = first[1]
+        i += 1
+        while True:
+            best, j = None, i
+            while j < n and items[j][0] <= cur_end + 1:
+                if best is None or items[j][1] > best[1]:
+                    best = items[j]
+                j += 1
+            i = j
+            if best is None or best[1] <= cur_end:
+                break
+            chosen.append(best)
+            cur_end = best[1]
+    return sorted(chosen, key=lambda t: (t[0], t[1]))
+
+
+def _ep_union_label(ranges) -> str:
+    """[(1,10),(10,20)] -> 'E01-E20'; [(1,7),(9,10)] -> 'E01-E07, E09-E10'; [(5,5)] -> 'E05'."""
+    merged = []
+    for a, b in sorted(ranges):
+        if merged and a <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    return ", ".join(f"E{a:02d}" if a == b else f"E{a:02d}-E{b:02d}" for a, b in merged)
+
+
+def _plain_len(text: str) -> int:
+    """Length Telegram counts for a message: the visible text, not the HTML tags."""
+    return len(_html.unescape(re.sub(r"<[^>]+>", "", text)))
+
+
+def _season_label(season) -> str:
+    try:
+        return f"{int(season):02d}"
+    except (TypeError, ValueError):
+        return "N/A" if season in (None, "") else str(season)
+
+
+def _series_entries(series_files, tenbit=False):
+    """{season: {slot: {"ids": [...], "size": n, "eps": 'E01-E10', "ranges": [...]}}} - one entry per
+    season + quality. The ids are the files that together cover the season (see _cover_episodes)."""
+    fallback = not any(_quality_slot(f.get("quality"), tenbit) for f in series_files)
+    by = defaultdict(lambda: defaultdict(list))
+    for f in series_files:
+        slot = _quality_slot(f.get("quality"), tenbit)
+        if slot is None:
+            if not fallback:
+                continue
+            _, rt = _split_quality(f.get("quality") or "N/A")
+            slot = " ".join(rt) if rt else "Unknown"
+        season, ep = _ep_key(f)
+        by[season][slot].append((f, _parse_ep_range(ep)))
+    out = {}
+    for season, slots in by.items():
+        out[season] = {}
+        for slot, lst in slots.items():
+            full = [f for f, r in lst if r is None]
+            if full:                                    # a whole-season file covers everything
+                best = max(full, key=_file_rank)
+                out[season][slot] = {"ids": [best["file_id"]], "size": best.get("file_size") or 0,
+                                     "eps": "Full Season", "ranges": []}
+                continue
+            uniq = {}
+            for f, r in lst:                            # same episode range twice -> the better file
+                if r not in uniq or _file_rank(f) > _file_rank(uniq[r]):
+                    uniq[r] = f
+            chosen = _cover_episodes([(a, b, uniq[(a, b)]) for (a, b) in uniq])
+            out[season][slot] = {
+                "ids": [c[2]["file_id"] for c in chosen],
+                "size": sum((c[2].get("file_size") or 0) for c in chosen),
+                "eps": _ep_union_label([(c[0], c[1]) for c in chosen]),
+                "ranges": [(c[0], c[1]) for c in chosen],
+            }
+    return out
+
+
+def _series_body_lines(series_files, tenbit, link_text, budget):
+    """Season-wise body of a series card, ONE link per season + quality (the link sends every episode of
+    that season in that quality). Gets shorter step by step until it fits Telegram's message limit:
+      1 full:     'Season 01' + one line per quality  (eps | size)
+      2 compact:  'S01 (E01-E10) : 480p | 720p | 1080p'
+      3 minimal:  'S01 : 480p | 720p | 1080p'
+      4 cut:      first seasons only + '... +N more seasons'"""
+    entries = _series_entries(series_files, tenbit)
+    if not entries:
+        return []
+
+    def s_key(s):
+        try:
+            return (0, int(s))
+        except (TypeError, ValueError):
+            return (1, 0)
+
+    def q_key(slot):
+        return (0, _SLOT_INDEX[slot]) if slot in _SLOT_INDEX else (1, 0)
+
+    def qlabel(slot):
+        return _slot_label(slot) if slot in _SLOT_INDEX else str(slot)
+
+    seasons = sorted(entries, key=s_key)
+    links = {(s, q): _group_link(e["ids"]) for s in seasons for q, e in entries[s].items()}
+
+    def full():
+        out = []
+        for s in seasons:
+            out.append(f"✧ Season {_season_label(s)}")
+            for q in sorted(entries[s], key=q_key):
+                e = entries[s][q]
+                size = f" • {get_size(e['size'])}" if e["size"] else ""
+                out.append(f"{qlabel(q)} : <a href='{links[(s, q)]}'>{link_text}</a> ({e['eps']}{size})")
+            out.append("")
+        return out
+
+    def compact(with_eps, n=None):
+        out = []
+        for s in seasons[:n]:
+            allr = [r for e in entries[s].values() for r in e["ranges"]]
+            eps = ""
+            if with_eps:
+                fulls = any(e["eps"] == "Full Season" for e in entries[s].values())
+                eps = f" ({_ep_union_label(allr)})" if allr else (" (Full Season)" if fulls else "")
+            parts = " | ".join(f"<a href='{links[(s, q)]}'>{qlabel(q)}</a>" for q in sorted(entries[s], key=q_key))
+            out.append(f"✧ S{_season_label(s)}{eps} : {parts}")
+        return out
+
+    for build in (full, lambda: compact(True), lambda: compact(False)):
+        lines = build()
+        if _plain_len("\n".join(lines)) <= budget:
+            return lines
+    n = len(seasons)
+    while n > 1:
+        n -= 1
+        lines = compact(False, n) + [f"… +{len(seasons) - n} more seasons"]
+        if _plain_len("\n".join(lines)) <= budget:
+            return lines
+    return compact(False, 1)
+
+
 def _file_link(file_id: str) -> str:
     return f"https://t.me/{temp.LINK_BOT or temp.U_NAME}?start=file_0_{file_id}"
 
@@ -865,9 +1036,10 @@ def _group_link(file_ids) -> str:
         return ""
     if len(file_ids) == 1:
         return _file_link(file_ids[0])
-    key = uuid.uuid4().hex[:12]
+    # same list of files -> same key, so rebuilding / editing a card never piles up new DB rows
+    key = hashlib.md5("|".join(file_ids).encode()).hexdigest()[:12]
     temp.GETALL[key] = [_FileRef(fid) for fid in file_ids]
-    # also save it in MongoDB so the link still works after a restart / redeploy
+    # also save it in MongoDB so the link still works after a restart / redeploy (upsert)
     try:
         asyncio.get_running_loop().create_task(db.save_getall(key, file_ids))
     except RuntimeError:
@@ -998,41 +1170,24 @@ def _build_post_caption(movie_doc, base_name, fmt=None, tenbit=False, names=Fals
                 header_parts.append(f"[Season {int(season_num):02d}]")
             except (TypeError, ValueError):
                 header_parts.append(f"[Season {season_num}]")
+        elif len(seasons_present) > 1:
+            try:
+                nums = sorted(int(x) for x in seasons_present)
+                if nums[-1] - nums[0] + 1 == len(nums):
+                    header_parts.append(f"[Season {nums[0]:02d}-{nums[-1]:02d}]")
+                else:
+                    header_parts.append(f"[{len(nums)} Seasons]")
+            except (TypeError, ValueError):
+                pass
         header_title = " ".join(header_parts) + combined_tag
 
         lines += [header_title, divider, info_block, divider, ""]
 
-        # one file per (quality slot, season, episode); only the six allowed qualities
+        # ALL seasons in this one card: one link per season + quality (see _series_body_lines)
         series_files = [f for f in files if f.get("tag") == "#SERIES" and f.get("file_id")]
-        picked = _pick_per_slot(series_files, key_fn=_ep_key, tenbit=tenbit)
-        groups = defaultdict(dict)
-        for (slot, key), f in picked.items():
-            groups[slot][key] = f
-        if not groups:   # nothing in the six slots -> do not publish an empty post, list what exists
-            for f in series_files:
-                _, rt = _split_quality(f.get("quality") or "N/A")
-                groups[(" ".join(rt) if rt else "Unknown")][_ep_key(f)] = f
+        budget = 3800 - _plain_len("\n".join(lines)) - 200     # head already built; room for watermark / preview char
+        lines += _series_body_lines(series_files, tenbit, link_text, max(budget, 600))
 
-        def _slot_order(s):
-            return (0, _SLOT_INDEX[s]) if s in _SLOT_INDEX else (1, 0)
-
-        for slot in sorted(groups.keys(), key=_slot_order):
-            qlabel = _slot_label(slot) if slot in _SLOT_INDEX else slot
-            lines.append(f"✧  {qlabel} : ")
-            for (season, ep), x in sorted(
-                groups[slot].items(),
-                key=lambda kv: (int(kv[0][0]) if kv[0][0] else 0, str(kv[0][1] or ""))
-            ):
-                ep_label = _fmt_episode_label(ep)
-                if len(seasons_present) > 1 and season:
-                    try:
-                        ep_label = f"S{int(season):02d} {ep_label}"
-                    except (TypeError, ValueError):
-                        ep_label = f"S{season} {ep_label}"
-                link = _file_link(x["file_id"])
-                size_str = f" ({get_size(x['file_size'])})" if x.get("file_size") else ""
-                lines.append(f"{ep_label} : <a href='{link}'>{link_text}</a>{size_str}")
-            lines.append("")
     else:
         movie_files = [f for f in files if f.get("tag") != "#SERIES" and f.get("file_id")]
         picked = _pick_per_slot(movie_files, tenbit=tenbit)   # one file per allowed quality, no duplicates

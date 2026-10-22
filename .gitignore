@@ -1,1 +1,9 @@
 .env
+__pycache__/
+*.py[cod]
+*.session
+*.session-journal
+*.log
+DreamXlogs.txt
+.venv/
+venv/
