@@ -441,7 +441,7 @@ async def _exact_year_tv_search(title, year, season=None, api_key=None, lang_cod
     return None
 
 
-async def _search_media_id(query: str, api_key=None, file: str = None, is_series: bool | None = None, season: int | None = None):
+async def _search_media_id(query: str, api_key=None, file: str = None, is_series: bool | None = None, season: int | None = None, _relax_year: bool = False):
     """Search TMDB for the best matching movie/TV show and return (media_type, media_id).
 
     is_series:
@@ -458,6 +458,8 @@ async def _search_media_id(query: str, api_key=None, file: str = None, is_series
                  TV show searched by bare name still matches correctly).
     """
     title, year = _extract_title_and_year(query)
+    if _relax_year:
+        year = None   # retry: the year in the file name is wrong / differs from TMDB (e.g. file says 2020, TMDB says 2026)
 
     # Caller explicitly told us the type -> trust it completely and filter
     # strictly. Otherwise fall back to the old regex-based guess (kept lenient
@@ -600,6 +602,10 @@ async def _search_media_id(query: str, api_key=None, file: str = None, is_series
     candidates_upcoming.sort(key=lambda x: (x['ratio'], x['year_exact'], x['lang_ok'], -x['year_gap'], x['score']), reverse=True)
     final = candidates_past or candidates_upcoming
     if not final:
+        if year and not is_series and not _relax_year:
+            # nothing within a year of the file name's year: file names often carry a wrong year, so search
+            # once more WITHOUT the year (title match + language decide) instead of giving up (no poster)
+            return await _search_media_id(query, api_key=api_key, file=file, is_series=is_series, season=season, _relax_year=True)
         return None, None
     top = final[0]
     return top['type'], top['id']

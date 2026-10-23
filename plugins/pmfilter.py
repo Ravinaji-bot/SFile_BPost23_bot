@@ -106,6 +106,167 @@ BUTTONS1 = {}
 BUTTONS2 = {}
 SPELL_CHECK = {}
 
+import os as _os
+CARD_SEARCH_LIMIT = int(_os.environ.get("CARD_SEARCH_LIMIT", "400"))    # how many matching files are looked at when the result card groups them by movie
+CARD_MAX_MOVIE_BTNS = min(int(_os.environ.get("CARD_MAX_MOVIE_BTNS", "50")), 90)  # at most this many movie buttons on one card (Telegram allows 100 buttons per message)
+
+
+_BG_TASKS = set()   # keeps background tasks alive until they finish
+
+
+def _title_key(t):
+    """Same movie, different spelling -> same key: 'Spider-Man' = 'Spiderman' = 'Spider Man', 'The Amazing X' = 'Amazing X'."""
+    t = re.sub(r"[^a-z0-9]+", " ", (t or "").lower()).strip()
+    t = re.sub(r"^the\s+", "", t)
+    return t.replace(" ", "")
+
+
+def _group_files_by_movie(files):
+    """Groups search-result files into movies: same title + year (+ season for series).
+    Inside one title+year, files whose audio languages never overlap are split into separate movies
+    (e.g. Drishyam 2021 Malayalam vs Drishyam 2021 Telugu). Returns a list of dicts:
+    {"title", "year", "season", "langs", "files"} sorted by year (oldest first)."""
+    from plugins.channel import extract_media_info
+    by_base = {}
+    for f in files:
+        try:
+            info = extract_media_info(f.file_name, getattr(f, "caption", None) or "")
+        except Exception:
+            info = None
+        if not info:
+            title, year, season, langs = display_name(f.file_name, getattr(f, "caption", None)), None, None, set()
+        else:
+            title = (info.get("base_name") or "").strip()
+            m = re.search(r"\b((?:19|20)\d{2})$", title)
+            year = m.group(1) if m else None
+            if m:
+                title = title[:m.start()].strip()
+            season = info.get("season") if info.get("tag") == "#SERIES" else None
+            langs = {x.strip() for x in str(info.get("language") or "").split(",") if x.strip() and x.strip() != "N/A"}
+        k = (_title_key(title), year, season)
+        by_base.setdefault(k, {"title": title or "Unknown", "year": year, "season": season, "items": []})["items"].append((f, langs))
+
+    # files whose name has NO year join the title when exactly ONE year exists for it
+    # (Dhoom 720p + Dhoom 2004 1080p -> one movie). With 2+ years it is unclear which one they are, so they stay separate.
+    for k in [k for k in by_base if k[1] is None]:
+        years = [k2 for k2 in by_base if k2[0] == k[0] and k2[2] == k[2] and k2[1] is not None]
+        if len(years) == 1:
+            by_base[years[0]]["items"].extend(by_base.pop(k)["items"])
+
+    movies = []
+    for g in by_base.values():
+        clusters = []   # [langset, [files]]
+        no_lang = []
+        for f, langs in g["items"]:
+            if g["season"] is not None:
+                # a series season is ONE button, whatever the language (no language shown for series)
+                if clusters:
+                    clusters[0][0] |= langs
+                    clusters[0][1].append(f)
+                else:
+                    clusters.append([set(langs), [f]])
+                continue
+            if not langs:
+                no_lang.append(f)
+                continue
+            for c in clusters:
+                if c[0] & langs:
+                    c[0] |= langs
+                    c[1].append(f)
+                    break
+            else:
+                clusters.append([set(langs), [f]])
+        # clusters that became connected through a later file are merged
+        merged = True
+        while merged:
+            merged = False
+            for i in range(len(clusters)):
+                for j in range(i + 1, len(clusters)):
+                    if clusters[i][0] & clusters[j][0]:
+                        clusters[i][0] |= clusters[j][0]
+                        clusters[i][1] += clusters[j][1]
+                        del clusters[j]
+                        merged = True
+                        break
+                if merged:
+                    break
+        if not clusters:
+            clusters = [[set(), []]]
+        biggest = max(clusters, key=lambda c: len(c[1]))
+        biggest[1].extend(no_lang)   # files with no language in the name go to the biggest group
+        for langs, fl in clusters:
+            if fl:
+                movies.append({"title": g["title"], "year": g["year"], "season": g["season"], "langs": sorted(langs), "files": fl})
+    # series: no year in the button. A title that has season groups (S01, S02 ...) is a series, so its
+    # year-only pack (e.g. "Game Of Thrones 2011 Complete") also loses the year in the label.
+    norm = _title_key
+    series_titles = {norm(m["title"]) for m in movies if m["season"] is not None}
+    title_year = {}
+    for m in movies:
+        if m["year"]:
+            t = norm(m["title"])
+            title_year[t] = min(title_year.get(t, m["year"]), m["year"])
+    packs = {}
+    rest = []
+    for m in movies:
+        if m["season"] is None and norm(m["title"]) in series_titles:
+            t = norm(m["title"])
+            if t in packs:
+                packs[t]["files"].extend(m["files"])
+                continue
+            packs[t] = m
+        rest.append(m)
+    movies = rest
+    for m in movies:
+        m["show_year"] = m["season"] is None and norm(m["title"]) not in series_titles   # series: no year, no language
+    # language is shown ONLY when two movie buttons would otherwise look the same (same title + same year)
+    same = {}
+    for m in movies:
+        if m["show_year"]:
+            same[(norm(m["title"]), m["year"])] = same.get((norm(m["title"]), m["year"]), 0) + 1
+    for m in movies:
+        m["show_lang"] = bool(m["show_year"] and same.get((norm(m["title"]), m["year"]), 0) > 1)
+
+    def _sort_key(m):
+        t = norm(m["title"])
+        ty = title_year.get(t)
+        sn = int(m["season"]) if str(m["season"]).isdigit() else 0
+        return (ty is None, ty or "", t, m["season"] is not None, sn, m["year"] or "")
+    movies.sort(key=_sort_key)
+    return movies
+
+
+def _movie_button_label(mv, limit=60):
+    # suffix (season / year / language / bullet) is always kept; only a long TITLE is shortened with "…"
+    suffix = ""
+    if mv["season"] is not None:
+        suffix += f" S{str(mv['season']).zfill(2)}" if str(mv["season"]).isdigit() else f" {mv['season']}"
+    if mv["year"] and mv.get("show_year", True):
+        suffix += f" ({mv['year']})"
+    if mv["langs"] and mv.get("show_lang", False):
+        suffix += " • " + "+".join(sorted(mv["langs"], key=lambda x: x.lower() == "english")[:2])   # English goes last
+    if not mv.get("show_year", True):
+        suffix += " •"   # series button: "🎬 Game Of Thrones S01 •"
+    title = mv["title"]
+    room = max(limit - len("🎬 ") - len(suffix), 8)
+    if len(title) > room:
+        title = title[:room - 1].rstrip() + "…"
+    return "🎬 " + title + suffix
+
+
+
+def _season_only_query(q):
+    """'game of thrones s07e07' / 'season 7 episode 7' / 's07 e07' -> 'game of thrones s07' (the whole season).
+    Returns None when the query has no season+episode tag."""
+    from database.ia_filterdb import _normalize_season_query
+    n = _normalize_season_query((q or "").lower())
+    pat = r"\bs0*(\d{1,3})e0*\d{1,4}\b"
+    if not re.search(pat, n):
+        return None
+    n = re.sub(pat, lambda x: f"s{int(x.group(1)):02d}", n)
+    return re.sub(r"\s+", " ", n).strip()
+
+
 async def _delete_user_msg(msg, delay):
     await asyncio.sleep(delay)
     try:
@@ -1577,6 +1738,8 @@ async def auto_filter(client, msg, spoll=False):
             # ignore scheduling errors
             pass
     m = None
+    shown_search = None    # user's own wording for the card title (kept with "&" / "and")
+    season_wanted = None   # set when the user typed a season + episode (S07E07): the card then shows only that season
     try:
         if not spoll:
             message = msg
@@ -1599,10 +1762,23 @@ async def auto_filter(client, msg, spoll=False):
                         search = search + x + " "
                 search = re.sub(r"\b(pl(i|e)*?(s|z+|ease|se|ese|(e+)s(e)?)|((send|snd|giv(e)?|gib)(\sme)?)|movie(s)?|new|latest|bro|bruh|broh|helo|that|find|dubbed|link|venum|iruka|pannunga|pannungga|anuppunga|anupunga|anuppungga|anupungga|film|undo|kitti|kitty|tharu|kittumo|kittum|movie|any(one)|with\ssubtitle(s)?)\b", "", search, flags=re.IGNORECASE)
                 search = search.replace("-", " ")
-                search = re.sub(r"[:']", "", search)
+                search = search.replace(":", "")
                 search = re.sub(r"\s+", " ", search).strip()
-                files, offset, total_results = await get_search_results(message.chat.id, search, offset=0, filter=True)
+                shown_search = search   # what the card title shows ("fast & furious"), the search itself drops "&" / "and"
+                # "fast & furious" / "fast and furious" -> "fast furious": file names write it as "and", "&" or nothing
+                _no_and = " ".join(w for w in search.split() if w not in ("&", "and"))
+                if _no_and:
+                    search = _no_and
+                search = re.sub(r"\s+", " ", search.replace("'", " ")).strip()   # "ocean's" -> "ocean s" (file names are saved like that)
                 settings = await get_settings(message.chat.id)
+                if settings.get('result_card'):
+                    _sq = _season_only_query(search)
+                    if _sq:
+                        search = _sq   # "game of thrones s07e07" -> whole season S07
+                        shown_search = None
+                    _m = re.search(r"\bs0*(\d{1,3})$", search)   # also a plain "game of thrones s07"
+                    season_wanted = int(_m.group(1)) if _m else None
+                files, offset, total_results = await get_search_results(message.chat.id, search, offset=0, filter=True)
                 if not files:
                     if settings.get("spell_check") and not getattr(message, "_ai_retried", False):
                         ai_sts = await m.edit('🤖 ᴘʟᴇᴀꜱᴇ ᴡᴀɪᴛ, ᴀɪ ɪꜱ ᴄʜᴇᴄᴋɪɴɢ ʏᴏᴜʀ ꜱᴘᴇʟʟɪɴɢ...')
@@ -1651,20 +1827,52 @@ async def auto_filter(client, msg, spoll=False):
             post_msg = await send_search_postcard(client, message.chat.id, files)
         if settings.get('result_card'):
             user_first = message.from_user.first_name if message.from_user else "Tʜᴇʀᴇ"
-            card_title = search.strip().title() if search else display_name(files[0].file_name, files[0].caption)
+            card_title = (shown_search or search).strip().title() if (shown_search or search) else display_name(files[0].file_name, files[0].caption)
             # whole card text is bold; names are HTML-escaped so a "<" in a name can't break the card
             card_cap = (
                 f"<b>Hey 👋 <u>{_html.escape(str(user_first))}</u> 😍\n\n"
                 f"📝 Title : <i><u>{_html.escape(str(card_title))}</u></i>\n"
                 f"📮 <i>Your File is Ready Below</i> 👇</b>"
             )
-            card_btn = [
-                [InlineKeyboardButton("📢 Join Update Channel", url=temp.MOVIE_CH_LINK or f"https://t.me/{temp.U_NAME}?startgroup=true")],
-                [InlineKeyboardButton(
+            # one button per movie (title + year + language): a click sends ALL files of that movie only
+            movie_rows = []
+            try:
+                all_files = files
+                try:
+                    more, _o, _t = await get_search_results(message.chat.id, search, max_results=CARD_SEARCH_LIMIT, offset=0, filter=True)
+                    if more:
+                        all_files = more
+                except Exception as e:
+                    logger.warning("card: could not load all matches, using the first page: %s", e)
+                movies = _group_files_by_movie(all_files)
+                if season_wanted is not None:
+                    # S07E07 / episode typed: only the season button (S07), never the single episode
+                    only = [mv for mv in movies if str(mv["season"]).isdigit() and int(mv["season"]) == season_wanted]
+                    movies = only or movies
+                if len(movies) > 1 or season_wanted is not None:
+                    for i, mv in enumerate(movies[:CARD_MAX_MOVIE_BTNS], start=1):
+                        sub_key = f"{key}G{i}"   # only letters/digits/-: it travels inside a t.me ?start= link
+                        temp.GETALL[sub_key] = mv["files"]
+                        _t = asyncio.create_task(db.save_getall(sub_key, [f.file_id for f in mv["files"]]))
+                        _BG_TASKS.add(_t)
+                        _t.add_done_callback(_BG_TASKS.discard)
+                        movie_rows.append([InlineKeyboardButton(
+                            _movie_button_label(mv),
+                            callback_data=f"cardsend#{sub_key}"   # always the poster-style movie card post (all qualities of that movie / season)
+                        )])
+            except Exception as e:
+                logger.exception("card: movie grouping failed, falling back to one download button: %s", e)
+                movie_rows = []
+            if movie_rows:
+                card_cap = card_cap.replace("<i>Your File is Ready Below</i>", "<i>Select your movie below</i>")
+            card_btn = [[InlineKeyboardButton("📢 Join Update Channel", url=temp.MOVIE_CH_LINK or f"https://t.me/{temp.U_NAME}?startgroup=true")]]
+            if movie_rows:
+                card_btn += movie_rows
+            else:
+                card_btn.append([InlineKeyboardButton(
                     "📩 Download File ↗️",
                     callback_data=f"cardsend#{key}" if settings.get('post_style_dl') else f"sendfiles#{key}"
-                )]
-            ]
+                )])
             sent = await message.reply_text(
                 text=card_cap,
                 reply_markup=InlineKeyboardMarkup(card_btn),

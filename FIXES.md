@@ -486,3 +486,30 @@ Not touched (on purpose): `Script.py` (start / help / about / premium texts are 
 * Default caption (`Script.CAPTION`) now: title link with the brand **before** `.mkv` (`... [Hindi ORG - Tamil] 𝑫𝒓𝒂𝒈𝒐𝒏𝑭𝒊𝒓𝒆𝑾𝒐𝒓𝒍𝒅.mkv`), then the VLC box, then a `Powered by ➥⌈ @DragonFireWorld ⌋` quote box.
 * Language box stays OFF by default (not removed): `/langbox on` brings it back.
 * If a custom caption was saved earlier from the bot (`/setfilecaption`) or in group settings, run `/resetfilecaption` to use the new default.
+
+## Update: movie-wise buttons on the group result card
+* The result card (`result_card` ON) no longer has one "Download File" button. When the search matches more than one movie, the card shows **one button per movie** (`🎬 Drishyam (2015) • Hindi • 3`). Clicking a button sends **only that movie's files** (all qualities), through the normal `allfiles_` / `postcard_` delivery (verification, fsub, auto-delete all unchanged).
+* Movies are split by title + year (+ season for series); inside the same title+year, files whose audio languages do not overlap are separate movies (Drishyam 2 (2021) Malayalam vs Telugu).
+* The card now looks at up to `CARD_SEARCH_LIMIT` (150) matches instead of only the first 10; at most `CARD_MAX_MOVIE_BTNS` buttons.
+* Only one movie found -> the old single "Download File" button is kept. Code: `_group_files_by_movie`, `_movie_button_label`, `auto_filter` in `plugins/pmfilter.py`.
+* Files without a year in the name are merged into the title when only ONE year exists for that title (`Dhoom 720p` + `Dhoom 2004 1080p`); with 2+ years they stay as their own button.
+* Movie button label no longer shows the file count: `🎬 Drishyam (2015) • Hindi`.
+* Series buttons show no year (`🎬 Game Of Thrones S01 • Hindi`, `🎬 Game Of Thrones • Hindi`). A title that has season groups counts as a series, so its year-only "Complete" pack loses the year too. Movies keep the year. Order: by title, pack first, then S01, S02 ...
+* Series buttons have no language: one button per season (`🎬 Game Of Thrones S01`), all languages of that season inside it. A series "Complete" pack is one button (`🎬 Game Of Thrones`). Movies keep `• Language`.
+* Series button ends with a bullet: `🎬 Game Of Thrones S01 •`. Movie buttons unchanged.
+* Season + episode typed (`Game Of Thrones S07E07`, `season 7 episode 7`, `s07 e07`): the group card searches the WHOLE season and shows only `🎬 Game Of Thrones S07 •`. Click = every episode / quality of S07 (post card or plain files, same delivery as before). Code: `_season_only_query`, `season_wanted` in `auto_filter` (only when `result_card` is ON).
+* Limits raised: the card looks at up to `CARD_SEARCH_LIMIT` = 400 matching files (was 150) and shows up to `CARD_MAX_MOVIE_BTNS` = 50 movie buttons (was 20; hard cap 90, Telegram allows 100 buttons per message). Both can be set with environment variables of the same name.
+* Search ignores the words `&` and `and` (`fast & furious` / `fast and furious` -> `fast furious`), so it matches `Fast.and.Furious`, `Fast.&.Furious` and `The.Fast.and.the.Furious`. Applies to every search (group, PM, buttons mode). A query made only of those words is left as typed.
+* Movie / season buttons on the result card ALWAYS open the poster-style movie card post (`cardsend#` -> `postcard_` link) with all qualities of that movie, whatever the `post_style_dl` setting is. The plain single "Download File" button (only one movie found) still follows `post_style_dl`.
+* Movie button label: `🎬 Drishyam (2015)`. The language (`• Hindi`) is shown only when two movie buttons have the same title and year (`🎬 Drishyam (2014) • Telugu` / `• Kannada`). Grouping itself is unchanged.
+* Long titles: the button text is shortened in the TITLE only (`🎬 Spider Man Into The Spider Verse Ext… (2018)`), year / season / language / bullet are never cut.
+* Same movie, different spelling is one button: `Spider-Man` = `Spiderman` = `Spider Man`, `The Amazing X` = `Amazing X` (`_title_key`).
+* The background tasks that save the button file lists are kept referenced until they finish (`_BG_TASKS`), so Python cannot drop them half way.
+* Card title shows what the user typed (`Title : Fast & Furious`), while the search itself ignores `&` / `and`.
+
+## Search fixes (database/ia_filterdb.py `get_search_results`, plugins/pmfilter.py `auto_filter`)
+* A number in the query is a whole number: `dhoom 2` no longer gives `Dhoom 2004` / `Dhoom 3 2013`, `kgf 2` no longer gives `KGF Chapter 1 2018`.
+* The query gets the same clean-up as a saved file name (`( ) [ ] , . ! ? & ' ...` -> space): `drishyam (2015)`, `drishyam,`, `fast & furious 6`, `dhoom 3!` now find files.
+* An apostrophe in the query is a space (`ocean's eleven` -> `ocean s eleven`, the way the file is saved) instead of being deleted; the card title still shows what the user typed. NOTE: a user who types `oceans eleven` (no apostrophe) still finds nothing.
+* The first word must start a word: `man superman` no longer gives `Batman v Superman`. Typing only the first letters of a word (`aveng`) still works.
+* A query with only punctuation (`(((`) returns no result.

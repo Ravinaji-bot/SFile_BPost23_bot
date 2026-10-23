@@ -216,6 +216,39 @@ def _normalize_season_query(query):
     return re.sub(rf"\bseason{sep}0*(\d{{1,3}})\b", lambda m: f"s{int(m.group(1))}", query, flags=re.IGNORECASE)
 
 
+_SEARCH_PUNCT = r"[_\-\.#+$%^&*()!~`,;:\"'?/<>\[\]{}=|\\]"   # the same characters save_file turns into a space in file names
+
+
+def _clean_query(query):
+    """The query gets the same clean-up as a stored file name: 'drishyam (2015)', 'dhoom 3,', 'ocean's eleven',
+    'fast & furious 6!' -> plain words. (File names are saved with these characters already replaced by a space.)"""
+    return re.sub(r"\s+", " ", re.sub(_SEARCH_PUNCT, " ", query or "")).strip()
+
+
+def _search_word_pattern(word, first):
+    w = word.lower()
+    if w == "480p":
+        p = r"(?:480|540)p"
+    else:
+        p = _season_word_pattern(w)
+        if not p:
+            p = re.escape(word)
+            if word.isdigit():
+                p += r"(?!\d)"      # '2' is the number 2, not the start of 2004 / 2013 ('dhoom 2' must not give Dhoom 3 2013)
+    if first:
+        p = r"(?<![a-z0-9])" + p     # the first word starts a word ('man steel' must not give Batman)
+    return p
+
+
+def _build_search_pattern(query):
+    if " " in query:
+        ws = [w for w in query.split() if w]
+        words = [_search_word_pattern(w, i == 0) for i, w in enumerate(ws)]
+        return r".*[\s\.\+\-_]".join(words) if words else r"."
+    _q = r"(?:480|540)p" if query.lower() == "480p" else re.escape(query)
+    return r"(\b|[\.\+\-_])" + _q + r"(\b|[\.\+\-_])"
+
+
 async def get_search_results(chat_id, query, file_type=None, max_results=None, offset=0, filter=False):
     if chat_id is not None and max_results is None:
         settings = await get_settings(int(chat_id))
@@ -233,15 +266,10 @@ async def get_search_results(chat_id, query, file_type=None, max_results=None, o
         else:
             filter_mongo = {"file_name": regex}
     else:
-        query = _normalize_season_query(query.strip())
+        query = _normalize_season_query(_clean_query(query))
         if not query:
             return [], None, 0
-        if " " in query:
-            words = [(r"(?:480|540)p" if w.lower() == "480p" else (_season_word_pattern(w) or re.escape(w))) for w in query.split() if w]
-            raw_pattern = (r".*[\s\.\+\-_]".join(words) if words else r".")
-        else:
-            _q = r"(?:480|540)p" if query.lower() == "480p" else re.escape(query)
-            raw_pattern = (r"(\b|[\.\+\-_])" + _q + r"(\b|[\.\+\-_])" )
+        raw_pattern = _build_search_pattern(query)
         try:
             regex = compile_regex(raw_pattern)
         except re.error:
