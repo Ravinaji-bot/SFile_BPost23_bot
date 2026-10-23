@@ -421,7 +421,29 @@ async def page_referral(user_id):
 # ============================================================================ commands (PM)
 @Client.on_message(filters.private & filters.command("settings"), group=-20)
 async def cmd_settings(client, message):
-    banner, text, kb = await page_settings(message.from_user.id)
+    user_id = message.from_user.id
+    rows = []
+    try:
+        for gid in await db.get_connected_grps(user_id):
+            try:
+                chat = await client.get_chat(gid)
+                rows.append([InlineKeyboardButton(chat.title, callback_data=f"grp_pm#{chat.id}")])
+            except Exception:
+                pass
+    except Exception:
+        logger.warning("could not load connected groups for %s", user_id, exc_info=True)
+    if rows:
+        rows.append([InlineKeyboardButton("⚙️ My Settings", callback_data="m|settings")])
+        await client.send_message(
+            message.chat.id,
+            "⚠️ <b>Select the group whose settings you want to change.</b>\n\n"
+            "If your group is not showing here, send /reload in that group "
+            "(or <code>/reload group_id</code> here) and it will appear.",
+            reply_markup=InlineKeyboardMarkup(rows),
+            parse_mode=enums.ParseMode.HTML,
+        )
+        raise StopPropagation
+    banner, text, kb = await page_settings(user_id)
     await send_page(client, message.chat.id, banner, text, kb)
     raise StopPropagation
 
