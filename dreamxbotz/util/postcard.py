@@ -8,7 +8,7 @@ from pyrogram.errors import FloodWait
 from pyrogram.types import LinkPreviewOptions
 from info import TMDB_POSTER, RESULT_ARCHIVE_CHANNEL, POST_ARCHIVE_BEFORE, POSTCARD_LANDSCAPE, POSTCARD_PREVIEW
 from utils import find_poster, temp
-from plugins.channel import extract_media_info, build_post_caption, build_post_buttons, get_post_format, preview_url
+from plugins.channel import extract_media_info, build_post_caption, build_post_buttons, get_post_format, preview_url, send_card_like_autopost
 
 logger = logging.getLogger(__name__)
 
@@ -99,28 +99,7 @@ async def send_search_postcard(client, chat_id, files, tenbit=False):
                 sent_one = await send_search_postcard(client, chat_id, part, tenbit)
                 first = first or sent_one
             return first
-        imdb_data = None
-        try:
-            first_name = movie_files[0]["filename"]
-            imdb_data = await find_poster(base_name, file=first_name)
-        except Exception:
-            imdb_data = None
-        imdb_data = imdb_data or {}
-        movie_doc = {
-            "files": movie_files,
-            "genres": imdb_data.get("genres") or "N/A",
-            "year": imdb_data.get("year"),
-        }
-        fmt = await get_post_format(temp.ME)
-        caption = build_post_caption(movie_doc, base_name, fmt, tenbit)
-        post_btn = build_post_buttons(fmt, movie_doc, tenbit)
-        sent = await _send_post_poster_below(
-                        client, chat_id, (imdb_data.get("backdrop") if POSTCARD_LANDSCAPE else None) or imdb_data.get("poster"), caption, post_btn, fmt.get("spoiler", False))
-        if sent is None:
-            sent = await client.send_message(
-                chat_id=chat_id, text=caption, reply_markup=post_btn,
-                link_preview_options=LinkPreviewOptions(is_disabled=True),
-                parse_mode=enums.ParseMode.HTML)
+        sent = await send_card_like_autopost(client, chat_id, movie_files, base_name, tenbit)
         return sent
     except Exception as e:
         logger.warning("send_search_postcard failed: %s", e)

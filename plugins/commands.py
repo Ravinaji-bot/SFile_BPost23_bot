@@ -595,21 +595,10 @@ async def start(client, message):
                 if not movie_files:
                     return await message.reply('<b><i>ɴᴏ ꜱᴜᴄʜ ꜰɪʟᴇ ᴇxɪꜱᴛꜱ !</b></i>')
                 base_name = base_name or "Unknown"
-                imdb_data = None
-                try:
-                    imdb_data = await find_poster(base_name, file=movie_files[0]["filename"])
-                except Exception:
-                    imdb_data = None
-                genres = (imdb_data or {}).get("genres") or "N/A"
-                year = (imdb_data or {}).get("year")
-                poster = ((imdb_data or {}).get("backdrop") if POSTCARD_LANDSCAPE else None) or (imdb_data or {}).get("poster")
-                movie_doc = {"files": movie_files, "genres": genres, "year": year}
-                fmt = await get_post_format(temp.ME)
-                caption = build_post_caption(movie_doc, base_name, fmt)
-                post_btn = build_post_buttons(fmt, movie_doc)
-                sent = await _send_post_poster_below(client, message.from_user.id, poster, caption, post_btn, fmt.get("spoiler", False))
+                from plugins.channel import send_card_like_autopost
+                sent = await send_card_like_autopost(client, message.from_user.id, movie_files, base_name)
                 if sent is None:
-                    sent = await client.send_message(chat_id=message.from_user.id, text=caption, reply_markup=post_btn, link_preview_options=LinkPreviewOptions(is_disabled=True), parse_mode=enums.ParseMode.HTML)
+                    return await message.reply('<b><i>ɴᴏ ꜱᴜᴄʜ ꜰɪʟᴇ ᴇxɪꜱᴛꜱ !</b></i>')
                 # save to RESULT_ARCHIVE_CHANNEL 30s before the end, auto delete after 3 minutes
                 _spawn(archive_and_delete_post(client, sent, POSTCARD_DELETE_TIME))
                 return
