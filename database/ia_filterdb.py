@@ -186,6 +186,36 @@ async def save_file(media, inbox=True):
             logger.debug("inbox: could not add %s", file_id, exc_info=True)
     return True, 1
 
+def _season_word_pattern(word):
+    """'s04' / 's4'      -> regex for S04, S4 and 'Season 4' / 'Season.04' in a file name
+       's04e01' / 's4e1' -> regex for S04E01, S04 E01, S4E1 and 'Season 4 Episode 1'
+    (file names use either spelling). Returns None when the word is not a season / episode tag."""
+    w = word.lower()
+    m = re.fullmatch(r"s0*(\d{1,3})e0*(\d{1,4})", w)
+    if m:
+        n, e = m.group(1), m.group(2)
+        sep = r"[\s\.\+\-_]*"
+        return rf"(?:s0*{n}{sep}e0*{e}|season{sep}0*{n}{sep}(?:episode|ep|e){sep}0*{e})(?!\d)"
+    m = re.fullmatch(r"s0*(\d{1,3})", w)
+    if m:
+        n = m.group(1)
+        return rf"(?:s0*{n}|season[\s\.\+\-_]*0*{n})(?!\d)"
+    return None
+
+
+def _normalize_season_query(query):
+    """Whatever way the season / episode is typed it becomes one tag, so the spelling does not matter:
+       'season 4 episode 1' / 'Season 04 Ep 01' / 's4 e1' / 'S04E01' -> 's4e1'
+       'season 4' / 'season04'                                        -> 's4'
+    ('Breaking Bad S04' worked, 'Breaking Bad Season 4' gave the spelling-check page.)"""
+    sep = r"[\s\.\-_]*"
+    query = re.sub(rf"\bseason{sep}0*(\d{{1,3}}){sep}(?:episode|ep|e){sep}0*(\d{{1,4}})\b",
+                   lambda m: f"s{int(m.group(1))}e{int(m.group(2))}", query, flags=re.IGNORECASE)
+    query = re.sub(r"\bs0*(\d{1,3})[\s\.\-_]+e0*(\d{1,4})\b",
+                   lambda m: f"s{int(m.group(1))}e{int(m.group(2))}", query, flags=re.IGNORECASE)
+    return re.sub(rf"\bseason{sep}0*(\d{{1,3}})\b", lambda m: f"s{int(m.group(1))}", query, flags=re.IGNORECASE)
+
+
 async def get_search_results(chat_id, query, file_type=None, max_results=None, offset=0, filter=False):
     if chat_id is not None and max_results is None:
         settings = await get_settings(int(chat_id))
@@ -203,11 +233,11 @@ async def get_search_results(chat_id, query, file_type=None, max_results=None, o
         else:
             filter_mongo = {"file_name": regex}
     else:
-        query = query.strip()
+        query = _normalize_season_query(query.strip())
         if not query:
             return [], None, 0
         if " " in query:
-            words = [(r"(?:480|540)p" if w.lower() == "480p" else re.escape(w)) for w in query.split() if w]
+            words = [(r"(?:480|540)p" if w.lower() == "480p" else (_season_word_pattern(w) or re.escape(w))) for w in query.split() if w]
             raw_pattern = (r".*[\s\.\+\-_]".join(words) if words else r".")
         else:
             _q = r"(?:480|540)p" if query.lower() == "480p" else re.escape(query)
