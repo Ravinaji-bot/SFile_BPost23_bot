@@ -237,7 +237,36 @@ def _language_codes(text):
             if re.search(r'\b' + name + r'\b', t)}
 
 
+# Where the real title of a file name ends: season / episode tag, quality, source or codec.
+# "Breaking Bad S05 [E16] 1080p 10Bit HEVC BluRay x265 MSubs.mkv" -> "Breaking Bad"
+# (without this the WHOLE name went to TMDB, found nothing, and the one-word fallback "Breaking"
+#  returned a wrong poster - "Breaking News").
+_TITLE_CUT_RE = re.compile(
+    r"[\s._\-\[\(]+(?:"
+    r"S\d{1,2}(?:[\s._\-]*E\d{1,4})?(?![a-z])"
+    r"|Season[\s._\-]*\d+"
+    r"|E\d{1,3}(?:[\s._\-]*E?\d{1,3})?(?![a-z\d])"
+    r"|\d{3,4}p\b|4k\b|uhd\b"
+    r"|(?:web[\s._\-]?dl|webrip|blu[\s._\-]?ray|bdrip|brrip|hdrip|hdtv|hdcam|dvdrip|hevc|x26[45]|h[\s._\-]?26[45])\b"
+    r")",
+    re.IGNORECASE)
+
+
+def _cut_title_tail(title: str) -> str:
+    m = _TITLE_CUT_RE.search(title or "")
+    if m and m.start() > 0:
+        cut = title[:m.start()].strip(" -_.([{")
+        if len(cut) >= 2:
+            return cut
+    return title
+
+
 def _extract_title_and_year(query: str):
+    title, year = _extract_title_and_year_raw(query)
+    return _cut_title_tail(title), year
+
+
+def _extract_title_and_year_raw(query: str):
     """Extract title and optional year from a search query string.
 
     Looks for a 4-digit year (1900-2099) ANYWHERE in the string, not just at the very

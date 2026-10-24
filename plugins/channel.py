@@ -9,7 +9,7 @@ from collections import defaultdict
 from plugins.Dreamxfutures.Imdbposter import get_movie_detailsx, fetch_image, get_movie_details, build_poster_from_telegram_thumb
 from database.users_chats_db import db
 from pyrogram import Client, filters, enums
-from info import ALLOW_PORTRAIT_POSTER, CHANNELS, MOVIE_UPDATE_CHANNEL, POSTCARD_TARGET, LINK_PREVIEW, ABOVE_PREVIEW, BAD_WORDS, TMDB_POSTER, MOVIE_POST_WATERMARK, strip_bad_prefixes, FQDN, URL, norm_res
+from info import ALLOW_PORTRAIT_POSTER, CHANNELS, MOVIE_UPDATE_CHANNEL, POSTCARD_TARGET, LINK_PREVIEW, ABOVE_PREVIEW, BAD_WORDS, TMDB_POSTER, MOVIE_POST_WATERMARK, strip_bad_prefixes, _fold_fancy, FQDN, URL, norm_res
 from Script import script
 from database.ia_filterdb import save_file, unpack_new_file_id
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LinkPreviewOptions
@@ -112,7 +112,7 @@ def normalize(s: str) -> str:
 
 def remove_ignored_words(text: str) -> str:
     IGNORE_WORDS_LOWER = {w.lower() for w in IGNORE_WORDS}
-    return " ".join(word for word in text.split() if word.lower() not in IGNORE_WORDS_LOWER)
+    return " ".join(word for word in text.split() if _fold_fancy(word).lower() not in IGNORE_WORDS_LOWER)
 
 def get_qualities(text: str) -> str:
     qualities = QUALITY_PATTERN.findall(text)
@@ -233,8 +233,9 @@ def _series_group_key(base_name, season):
 
 
 def extract_media_info(filename: str, caption: str):
-    filename = normalize(strip_bad_prefixes(clean_mentions_links(filename)).title())
-    caption_clean = clean_mentions_links(strip_bad_prefixes(caption)).lower() if caption else ""
+    # strip_bad_prefixes runs BEFORE clean_mentions_links, so "TG : @channel Movie" is still recognised as a promo tag
+    filename = normalize(strip_bad_prefixes(clean_mentions_links(strip_bad_prefixes(filename))).title())
+    caption_clean = clean_mentions_links(strip_bad_prefixes(clean_mentions_links(strip_bad_prefixes(caption)))).lower() if caption else ""
     unified = f"{caption_clean} {filename.lower()}".strip()
 
     season = episode = year = None

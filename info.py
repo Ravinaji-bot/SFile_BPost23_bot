@@ -1,4 +1,5 @@
 import re
+import unicodedata
 import os
 from os import environ, getenv
 from Script import script
@@ -275,7 +276,7 @@ BAD_PREFIXES = [
 
 # Symbols / emoji (hearts, stars, etc.) and zero-width chars that uploaders put in front of their tag
 _TAG_EMOJI = "\u2190-\u2BFF\u3030\u303d\u3297\u3299\U0001F000-\U0001FAFF\ufe0f\u200d\u20e3"
-_ZERO_WIDTH = "\u200b-\u200f\u2060\ufeff"
+_ZERO_WIDTH = "\u200b-\u200f\u2060-\u2064\ufeff\u00ad\u034f\u115f\u1160\u3164\u2800"   # zero-width / invisible filler chars (Hangul filler, braille blank ...)
 
 
 def norm_res(text):
@@ -302,6 +303,19 @@ PROMO_DB_REGEX = r"^[^A-Za-z0-9]*((" + "|".join(map(re.escape, BAD_PROMO_WORDS))
 _BAD_WORDS_LOWER = {w.lower() for w in BAD_WORDS}
 
 
+def _fold_fancy(text):
+    """Bold / italic / script 'fancy' letters (𝐓𝐆, 𝐀𝐫𝐞𝐧𝐚, 𝑫𝒓𝒂𝒈𝒐𝒏 ...) -> plain ASCII, one character for one character
+    (so an index in the folded text is the same index in the original). Used only to RECOGNISE junk tags."""
+    out = []
+    for c in text:
+        if "\U0001D400" <= c <= "\U0001D7FF":
+            n = unicodedata.normalize("NFKC", c)
+            out.append(n if len(n) == 1 else c)
+        else:
+            out.append(c)
+    return "".join(out)
+
+
 def strip_bad_words(text, keep=("original",)):
     """Removes BAD_WORDS (whole words, any case, quotes / brackets around them ignored: '"TG', 'Join,') and
     any word that starts with @ or www.  `keep` = bad words that other code still needs (ORG detection)."""
@@ -309,7 +323,9 @@ def strip_bad_words(text, keep=("original",)):
         return text
     drop = _BAD_WORDS_LOWER - {k.lower() for k in keep}
     words = [w for w in text.split()
-             if not (w.startswith(("@", "www.")) or w.strip(_QUOTES + "[](){}<>,.:;!-_|").lower() in drop)]
+             if not (w.startswith(("@", "www.")) or _fold_fancy(w).strip(_QUOTES + "[](){}<>,.:;!-_|").lower() in drop)]
+    while words and not words[0].strip(":-|_.,;"):      # "TG : @x Movie" -> the ':' that was next to TG is junk too
+        words.pop(0)
     return " ".join(words)
 
 
@@ -325,26 +341,28 @@ def strip_bad_prefixes(text):
         return text
     out = text
     # 0) promo tag at the very start: \"Join @twg arena\" / \"TG @FILMFEVE\" / \"❤️ Join @chan\"  (quotes, emoji and a
-    #    glued BAD_PREFIXES tag included). A leading @handle is junk too.
+    #    glued BAD_PREFIXES tag included). A leading @handle is junk too. Fancy letters (𝐓𝐆) are read as plain ones.
     for _ in range(3):
-        before = out
-        out = _PROMO_START_RE.sub("", out, count=1)
-        if out == before:
+        folded = _fold_fancy(out)
+        m = _PROMO_START_RE.match(folded) if len(folded) == len(out) else None
+        if not m or m.end() == 0:
             break
+        out = out[m.end():]
     for word in BAD_PREFIXES:
         w = re.escape(word)
+        r1 = re.compile(rf"^[\s{_ZERO_WIDTH}]*[^\w\s]+[\s_.\-]*(?i:{w})(?!s(?:\W|$))[\s._\-\]\)>\u3011\u300d\u300f\uff09\uff3d]*")
+        r2 = re.compile(rf"^[\s{_ZERO_WIDTH}]*{w}(?=[A-Z0-9])")
         for _ in range(3):  # tag can be stacked / repeated
             before = out
-            # 1) at the very start, after any symbol / emoji:  "❤️ arenaDrishyam", "(arena) Drishyam"
-            out = re.sub(
-                rf"^[\s{_ZERO_WIDTH}]*[^\w\s]+\s*(?i:{w})(?!s(?:\W|$))[\s._\-\]\)]*",
-                "", out, count=1)
-            # 2) at the very start, glued to the real title (title begins with a capital / digit)
-            out = re.sub(rf"^[\s{_ZERO_WIDTH}]*{w}(?=[A-Z0-9])", "", out, count=1)
+            for rx in (r1, r2):
+                folded = _fold_fancy(out)
+                m = rx.match(folded) if len(folded) == len(out) else rx.match(out)
+                if m:
+                    out = out[m.end():]
             if out == before:
                 break
-        # 3) anywhere: emoji + tag  ("Drishyam ❤️ arena", "x ❤️ arenaDrishyam")
-        out = re.sub(rf"[{_TAG_EMOJI}]+\s*(?i:{w})(?![a-z])[ \t._\-\]\)]*", "", out)
+        # 3) anywhere: emoji + tag  ("Drishyam ❤️ arena", "x ❤️ arenaDrishyam", "x ❤️_arena_Drishyam")
+        out = re.sub(rf"[{_TAG_EMOJI}]+[\s_.\-]*(?i:{w})(?![a-z])[ \t._\-\]\)]*", "", out)
     return out.strip() or text
  
 
