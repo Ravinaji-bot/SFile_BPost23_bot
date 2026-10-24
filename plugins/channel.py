@@ -678,10 +678,10 @@ DEFAULT_POST_FORMAT = {
     "bold": True,
     "watermark": MOVIE_POST_WATERMARK,
     "link_text": "Click Here",
-    "divider": "────•˚•── ✦ ──•˚•────",
-    "title_emoji": "🐉",
+    "divider": "───────•˚•── ✦ ──•˚•───────",
+    "title_emoji": "🎬",
     "layout": "twoline",  # "twoline" = "✧ quality :\nlink (size)", "compact" = "quality : link"
-    "header_box": True,  # wraps the audio/genres/ott/quality lines (and watermark) in a Telegram quote-box
+    "header_box": False,  # wraps the audio/genres/ott/quality lines (and watermark) in a Telegram quote-box
     "button_text": "",    # optional inline button under the post, e.g. "📢 Join Channel"
     "button_url": "",     # URL for that button; button is shown only if BOTH are set
     "spoiler": False,     # if True, the poster photo is sent as a spoiler (blurred until tapped)
@@ -1044,6 +1044,30 @@ def _series_entries(series_files, tenbit=False):
     return out
 
 
+_COMPLETE_RE = re.compile(r"(combined|complete|batch|\bpack\b|full[\s._\-]*season)", re.IGNORECASE)
+
+
+def _is_complete_name(name) -> bool:
+    return bool(_COMPLETE_RE.search(name or ""))
+
+
+def _sans_bold(text: str) -> str:
+    """'DragonFireWorld' -> '𝗗𝗿𝗮𝗴𝗼𝗻𝗙𝗶𝗿𝗲𝗪𝗼𝗿𝗹𝗱' (plain ASCII only; text with HTML tags / already-styled text is left alone)."""
+    if "<" in text or any(ord(c) > 127 for c in text):
+        return text
+    out = []
+    for c in text.lstrip("@"):
+        if "A" <= c <= "Z":
+            out.append(chr(0x1D5D4 + ord(c) - 65))
+        elif "a" <= c <= "z":
+            out.append(chr(0x1D5EE + ord(c) - 97))
+        elif "0" <= c <= "9":
+            out.append(chr(0x1D7EC + ord(c) - 48))
+        else:
+            out.append(c)
+    return "".join(out)
+
+
 def _series_body_lines(series_files, tenbit, link_text, budget):
     """Season-wise body of a series card, ONE link per season + quality (the link sends every episode of
     that season in that quality). Gets shorter step by step until it fits Telegram's message limit:
@@ -1073,12 +1097,17 @@ def _series_body_lines(series_files, tenbit, link_text, budget):
     def full():
         out = []
         for s in seasons:
-            out.append(f"✧ Season {_season_label(s)}")
+            names = [f.get("filename") for f in series_files if _ep_key(f)[0] == s]
+            complete = any(_is_complete_name(n) for n in names) or any(
+                e["eps"] == "Full Season" for e in entries[s].values())
+            out.append(f"◈  Season {_season_label(s)} ◈" + (" Complete ◈" if complete else ""))
+            out.append("")
             for q in sorted(entries[s], key=q_key):
                 e = entries[s][q]
                 size = f" • {get_size(e['size'])}" if e["size"] else ""
-                out.append(f"{qlabel(q)} : <a href='{links[(s, q)]}'>{link_text}</a> ({e['eps']}{size})")
-            out.append("")
+                out.append(f"✧ {qlabel(q)} : ({e['eps']}{size})")
+                out.append(f"➠ <a href='{links[(s, q)]}'>{link_text}</a>")
+                out.append("")
         return out
 
     def compact(with_eps, n=None):
@@ -1257,6 +1286,8 @@ def _build_post_caption(movie_doc, base_name, fmt=None, tenbit=False, names=Fals
             except (TypeError, ValueError):
                 pass
         header_title = " ".join(header_parts)
+        if any(_is_complete_name(f.get("filename")) for f in files if f.get("tag") == "#SERIES"):
+            header_title += " ◈ #Combined"
 
         lines += [header_title, divider, info_block, divider, ""]
 
@@ -1288,7 +1319,9 @@ def _build_post_caption(movie_doc, base_name, fmt=None, tenbit=False, names=Fals
                 lines.append("")
 
     if watermark:
-        lines.append(f"𝑷𝒐𝒘𝒆𝒓𝒆𝒅 𝒃𝒚 ➥「 {watermark} 」")
+        lines += ["╔═════════════════════╗",
+                  f"    𝑷𝒐𝒘𝒆𝒓𝒆𝒅 𝒃𝒚 ➥ {_sans_bold(str(watermark))}      ",
+                  "╚═════════════════════╝"]
 
     caption = "\n".join(lines).strip()
     return f"<b>{caption}</b>"   # the whole card is always bold
