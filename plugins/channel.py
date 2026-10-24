@@ -688,6 +688,8 @@ DEFAULT_POST_FORMAT = {
     "show_names": True,   # movie post heading = full pretty file name of the first file (instead of "Title Year")
 }
 
+_OLD_SHORT_DIVIDER = "────•˚•── ✦ ──•˚•────"
+
 _POST_FORMAT_KEYS = {
     "bold": "POST_BOLD",
     "watermark": "POST_WATERMARK",
@@ -712,6 +714,8 @@ async def get_post_format(bot_id):
             fmt[key] = await db.get_bot_setting(bot_id, db_key, DEFAULT_POST_FORMAT[key])
     except Exception:
         logger.exception("Failed to load post format settings, using defaults")
+    if fmt.get("divider") == _OLD_SHORT_DIVIDER:   # saved earlier with the old short default -> use the long divider
+        fmt["divider"] = DEFAULT_POST_FORMAT["divider"]
     return fmt
 
 

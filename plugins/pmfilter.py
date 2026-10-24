@@ -1849,7 +1849,7 @@ async def auto_filter(client, msg, spoll=False):
                     # S07E07 / episode typed: only the season button (S07), never the single episode
                     only = [mv for mv in movies if str(mv["season"]).isdigit() and int(mv["season"]) == season_wanted]
                     movies = only or movies
-                if len(movies) > 1 or season_wanted is not None:
+                if movies:   # one OR many movies: always a button with the movie / series name that opens the poster-style card
                     for i, mv in enumerate(movies[:CARD_MAX_MOVIE_BTNS], start=1):
                         sub_key = f"{key}G{i}"   # only letters/digits/-: it travels inside a t.me ?start= link
                         temp.GETALL[sub_key] = mv["files"]
@@ -1864,7 +1864,7 @@ async def auto_filter(client, msg, spoll=False):
                 logger.exception("card: movie grouping failed, falling back to one download button: %s", e)
                 movie_rows = []
             if movie_rows:
-                card_cap = card_cap.replace("<i>Your File is Ready Below</i>", "<i>Select your movie below</i>")
+                card_cap = card_cap.replace("<i>Your File is Ready Below</i>", "<i>Select your Movie/Series below</i>")
             card_btn = [[InlineKeyboardButton("📢 Join Update Channel", url=temp.MOVIE_CH_LINK or f"https://t.me/{temp.U_NAME}?startgroup=true")]]
             if movie_rows:
                 card_btn += movie_rows
