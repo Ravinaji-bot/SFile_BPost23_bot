@@ -470,7 +470,7 @@ async def _exact_year_tv_search(title, year, season=None, api_key=None, lang_cod
     return None
 
 
-async def _search_media_id(query: str, api_key=None, file: str = None, is_series: bool | None = None, season: int | None = None, _relax_year: bool = False):
+async def _search_media_id(query: str, api_key=None, file: str = None, is_series: bool | None = None, season: int | None = None, _relax_year: bool = False, _min_year: int | None = None):
     """Search TMDB for the best matching movie/TV show and return (media_type, media_id).
 
     is_series:
@@ -567,6 +567,10 @@ async def _search_media_id(query: str, api_key=None, file: str = None, is_series
             r_date = r.get('release_date') or r.get('first_air_date') or ''
             if r_date[:4] == str(year):
                 scored_results.append((r, 0.5))
+        elif year and name and len(name) >= 3 and title.lower().startswith(name.lower()):
+            r_date = r.get('release_date') or r.get('first_air_date') or ''
+            if r_date[:4] == str(year):
+                scored_results.append((r, 0.5))
     if not scored_results:
         scored_results = [(r, get_ratio(r.get('title') or r.get('name'), title)) for r in multi_results[:10]]
 
@@ -591,6 +595,8 @@ async def _search_media_id(query: str, api_key=None, file: str = None, is_series
         if year and not is_series:
             if abs(rd_date.year - year) > 1:
                 continue
+        if _relax_year and _min_year and mtype == 'movie' and rd_date.year < _min_year - 3:
+            continue
         if mtype == 'movie':
             try:
                 details = await _fetch_media_details(mtype, r['id'], api_key=api_key)
@@ -634,7 +640,7 @@ async def _search_media_id(query: str, api_key=None, file: str = None, is_series
         if year and not is_series and not _relax_year:
             # nothing within a year of the file name's year: file names often carry a wrong year, so search
             # once more WITHOUT the year (title match + language decide) instead of giving up (no poster)
-            return await _search_media_id(query, api_key=api_key, file=file, is_series=is_series, season=season, _relax_year=True)
+            return await _search_media_id(query, api_key=api_key, file=file, is_series=is_series, season=season, _relax_year=True, _min_year=year)
         return None, None
     top = final[0]
     return top['type'], top['id']
