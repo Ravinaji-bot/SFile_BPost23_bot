@@ -689,6 +689,7 @@ DEFAULT_POST_FORMAT = {
     "show_names": True,   # movie post heading = full pretty file name of the first file (instead of "Title Year")
 }
 
+POST_WATERMARK_LINK = "https://t.me/DragonFireWorld"
 _OLD_SHORT_DIVIDER = "────•˚•── ✦ ──•˚•────"
 
 _POST_FORMAT_KEYS = {
@@ -1324,8 +1325,11 @@ def _build_post_caption(movie_doc, base_name, fmt=None, tenbit=False, names=Fals
                 lines.append("")
 
     if watermark:
+        wm = str(watermark)
+        if "<" not in wm:
+            wm = f"<a href='{POST_WATERMARK_LINK}'>{_sans_bold(wm)}</a>"
         lines += ["╔═════════════════════╗",
-                  f"    𝑷𝒐𝒘𝒆𝒓𝒆𝒅 𝒃𝒚 ➥ {_sans_bold(str(watermark))}      ",
+                  f"    𝑷𝒐𝒘𝒆𝒓𝒆𝒅 𝒃𝒚 ➥ {wm}      ",
                   "╚═════════════════════╝"]
 
     caption = "\n".join(lines).strip()
