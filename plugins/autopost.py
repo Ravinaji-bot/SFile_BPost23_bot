@@ -60,8 +60,8 @@ from info import ADMINS, MULTIPLE_DB, TMDB_POSTER, CUSTOM_FILE_CAPTION, NOT_SMAL
 from plugins.file_caption import peek_file_caption, get_file_caption, standard_caption, load_switches
 from plugins.pretty_name import display_name, load_pretty_settings, clean_caption
 from plugins.channel import extract_media_info, _series_group_key
-from plugins.Dreamxfutures.Imdbposter import get_movie_detailsx, get_movie_details, fetch_image
-from utils import clean_filename, get_size, get_languages_html, add_episode_label, get_episode_label, extract_button
+from plugins.Dreamxfutures.Imdbposter import fetch_image
+from utils import find_poster, clean_filename, get_size, get_languages_html, add_episode_label, get_episode_label, extract_button
 
 logger = logging.getLogger(__name__)
 
@@ -315,18 +315,17 @@ def _build_caption(f):
 
 async def _group_cover_base(qdoc):
     """One TMDB/IMDb lookup + one image download for the whole collection.
-    Returns the JPEG bytes (already watermarked) or None."""
+    Returns the JPEG bytes (already watermarked) or None.
+    Uses utils.find_poster - the SAME lookup as the PM video cover and the PM post card - so the three routes
+    pick the same film (language of the file name counts, IMDb fallback gets a TMDB backdrop, results are cached)."""
     title = qdoc.get("title")
     is_series = qdoc.get("tag") == "#SERIES"
     try:
-        if TMDB_POSTER:
-            details = await get_movie_detailsx(title, season=qdoc.get("season"), is_series=is_series) or {}
-            if details.get("error") or not (details.get("backdrop_url") or details.get("poster_url")):
-                details = await get_movie_details(title) or {}
-        else:
-            details = await get_movie_details(title) or {}
+        files = qdoc.get("files") or []
+        first_name = (files[0].get("n") if files and isinstance(files[0], dict) else None) or None
+        details = await find_poster(title, file=first_name, season=qdoc.get("season"), is_series=is_series) or {}
         # same rule as the PM cover (utils.get_landscape_thumb): a portrait poster only when ALLOW_PORTRAIT_POSTER is on
-        url = details.get("backdrop_url") or (details.get("poster_url") if ALLOW_PORTRAIT_POSTER else None)
+        url = details.get("backdrop") or (details.get("poster") if ALLOW_PORTRAIT_POSTER else None)
         if not url:
             return None
         buf = await fetch_image(url, (1280, 720))

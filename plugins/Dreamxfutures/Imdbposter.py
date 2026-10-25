@@ -266,6 +266,9 @@ def _extract_title_and_year(query: str):
     return _cut_title_tail(title), year
 
 
+_YEAR_RE = re.compile(r'(?<![A-Za-z\d])(19\d{2}|20\d{2})(?![A-Za-z\d])')
+
+
 def _extract_title_and_year_raw(query: str):
     """Extract title and optional year from a search query string.
 
@@ -275,12 +278,15 @@ def _extract_title_and_year_raw(query: str):
     end-of-string behavior if no such year is found anywhere.
     """
     query = strip_bad_prefixes(query)
-    match = re.search(r'(19\d{2}|20\d{2})', query)
-    if match:
-        year = int(match.group(1))
-        title = query[:match.start()].strip(" -_.([{")
-        if title:
-            return title, year
+    # A year is a standalone 19xx / 20xx (not part of 1920x1080, x2023y ...), not later than next year.
+    # When several are present the LAST one with a title in front of it wins:
+    # "Blade Runner 2049 2017" -> year 2017, "Blade.Runner.2049.1080p" -> no year, title keeps 2049.
+    max_year = datetime.utcnow().year + 1
+    cands = [m for m in _YEAR_RE.finditer(query)
+             if int(m.group(1)) <= max_year and query[:m.start()].strip(" -_.([{")]
+    if cands:
+        m = cands[-1]
+        return query[:m.start()].strip(" -_.([{"), int(m.group(1))
 
     match = re.search(r'^(.*?)(?:\s+(\d{4}))?$', query.strip())
     if match:
@@ -465,7 +471,7 @@ async def _exact_year_tv_search(title, year, season=None, api_key=None, lang_cod
                 sd = await _tmdb_get(f"tv/{r['id']}/season/{season}", api_key=api_key)
             except Exception:
                 continue
-            if (sd or {}).get('air_date', '')[:4] == str(year):
+            if ((sd or {}).get('air_date') or '')[:4] == str(year):
                 return r['id']
     return None
 
@@ -888,6 +894,28 @@ def _imdb_query(q: str) -> str:
     return f"{title} {year}" if year else (title or q)
 
 
+async def _backdrop_from_imdb_id(imdb_id, api_key=None):
+    """IMDb has no landscape image. With the IMDb id, ask TMDB (find) for the title's backdrop."""
+    if not imdb_id:
+        return None
+    try:
+        d = await _tmdb_get(f"find/{imdb_id}", params={'external_source': 'imdb_id'}, api_key=api_key)
+        for r in (d.get('movie_results') or []) + (d.get('tv_results') or []):
+            if r.get('backdrop_path'):
+                return f"{TMDB_IMAGE_BASE_URL}{r['backdrop_path']}".replace("/original/", "/w1280/")
+    except Exception as e:
+        logger.info(f"TMDB backdrop by imdb id failed for {imdb_id}: {e}")
+    return None
+
+
+async def _imdb_fallback_details(q):
+    """IMDb details + (when possible) a TMDB landscape backdrop, so the cover / card are not portrait-only."""
+    det = await get_movie_details(_imdb_query(q))
+    if det and not det.get('backdrop_url') and det.get('imdb_id'):
+        det['backdrop_url'] = await _backdrop_from_imdb_id(det['imdb_id'], TMDB_API_KEY or None)
+    return det
+
+
 async def get_movie_detailsx(query, id=False, file=None, season=None, is_series=None):
     """
     Primary movie details fetcher using direct TMDB API calls.
@@ -898,10 +926,10 @@ async def get_movie_detailsx(query, id=False, file=None, season=None, is_series=
         data = await _fetch_tmdb_data(q, api_key=TMDB_API_KEY or None, file=file, season=season, is_series=is_series)
         if not data:
             logger.info(f"TMDB returned no results for '{q}' → switching to IMDb fallback")
-            return await get_movie_details(_imdb_query(q))
+            return await _imdb_fallback_details(q)
     except Exception as e:
         logger.info(f"TMDB direct call failed → fallback IMDb: {e}")
-        return await get_movie_details(_imdb_query(q))
+        return await _imdb_fallback_details(q)
 
     # Normalize fields
     details = {}

@@ -18,7 +18,8 @@ from database.users_chats_db import db
 from bs4 import BeautifulSoup
 import aiohttp
 from shortzy import Shortzy
-from plugins.Dreamxfutures.Imdbposter import get_movie_detailsx
+from plugins.Dreamxfutures.Imdbposter import get_movie_detailsx, _language_codes, _extract_title_and_year
+from time import monotonic as _monotonic
 
 
 logger = logging.getLogger(__name__)
@@ -491,6 +492,18 @@ async def old_get_poster(query, bulk=False, id=False, file=None):
         'url':f'https://www.imdb.com/title/tt{movieid}'
     }
     
+def _poster_kind(details):
+    """'movie' or 'tv series'. The old check  'movie' in tmdb_url  was always True (themoviedb.org contains
+    'movie'), so every series showed as a movie; and an IMDb fallback (no tmdb_url) made everything a series."""
+    url = (details.get('tmdb_url') or '').lower()
+    if '/tv/' in url:
+        return 'tv series'
+    if '/movie/' in url:
+        return 'movie'
+    k = str(details.get('kind') or '').lower().replace(' ', '')      # IMDb fallback carries its own kind
+    return 'movie' if k in ('', 'movie', 'tvmovie', 'video') else 'tv series'
+
+
 async def get_posterx(query, bulk=False, id=False, file=None, season=None, is_series=None):
     """
     Fetches movie details from TMDB using the get_movie_detailsx helper
@@ -527,7 +540,7 @@ async def get_posterx(query, bulk=False, id=False, file=None, season=None, is_se
         "seasons": details.get('seasons'),
         "box_office": details.get('box_office'),
         'localized_title': details.get('localized_title'),
-        'kind': 'movie' if 'movie' in details.get('tmdb_url', '') else 'tv series',
+        'kind': _poster_kind(details),
         "imdb_id": details.get('imdb_id'),
         "cast": list_to_str(details.get("cast")),
         "runtime": list_to_str(details.get("runtime")),
@@ -548,7 +561,7 @@ async def get_posterx(query, bulk=False, id=False, file=None, season=None, is_se
         'backdrop' : details.get('backdrop_url'),
         'plot': plot,
         'rating': str(details.get("rating", "N/A")),
-        'url': details.get('tmdb_url')
+        'url': details.get('tmdb_url') or details.get('url')
     }
 
 _LANG_WORDS = {
@@ -708,11 +721,20 @@ def add_episode_label(buf, filename):
         return buf
 
 
+_FP_CACHE = OrderedDict()   # key -> (expires_at, result)
+_FP_LOCKS = {}              # key -> asyncio.Lock  (same title looked up at once = one TMDB trip)
+_FP_CACHE_MAX = 300
+_FP_TTL_OK = 6 * 3600       # a found poster is remembered 6 hours
+_FP_TTL_FAIL = 300          # a failed lookup only 5 minutes, so it is tried again soon
+
+
 async def find_poster(query, file=None, season=None, is_series=None):
     """THE poster / details lookup for the PM video cover and the PM post card (one route for both).
     TMDB first (IMDb fallback is inside get_movie_detailsx) when TMDB_POSTER is on, IMDb only when it is off.
     season / is_series are worked out from the file name when not given, so a series gets the poster of
     the right season (before, the cover and the PM card never sent them and could pick the wrong one).
+    Results are cached (6 h found / 5 min failed): the 6 qualities of one movie, "Send All" and the post card
+    no longer search TMDB and download the image again for every single file.
     Returns the same dict as get_posterx() / get_poster(), or None."""
     if season is None and is_series is None:
         try:
@@ -721,9 +743,35 @@ async def find_poster(query, file=None, season=None, is_series=None):
             is_series = season is not None
         except Exception:
             season, is_series = None, None
-    if TMDB_POSTER:
-        return await get_posterx(query, file=file, season=season, is_series=is_series)
-    return await get_poster(query, file=file)
+    # key = what TMDB is really asked (title + year), NOT the raw text: the cover sends the whole file name
+    # ("Kantara 2022 1080p WEB-DL ..."), so every quality of one movie must give the same key.
+    try:
+        _t, _y = _extract_title_and_year(str(query))
+    except Exception:
+        _t, _y = str(query), None
+    key = ((_t or str(query)).strip().lower(), _y, season, is_series,
+           tuple(sorted(_language_codes(file or str(query)))), bool(TMDB_POSTER))
+    hit = _FP_CACHE.get(key)
+    if hit and hit[0] > _monotonic():
+        _FP_CACHE.move_to_end(key)
+        return dict(hit[1]) if hit[1] else None
+    lock = _FP_LOCKS.setdefault(key, asyncio.Lock())
+    try:
+        async with lock:
+            hit = _FP_CACHE.get(key)          # another task may have filled it while we waited
+            if hit and hit[0] > _monotonic():
+                return dict(hit[1]) if hit[1] else None
+            if TMDB_POSTER:
+                data = await get_posterx(query, file=file, season=season, is_series=is_series)
+            else:
+                data = await get_poster(query, file=file)
+            _FP_CACHE[key] = (_monotonic() + (_FP_TTL_OK if data else _FP_TTL_FAIL), data)
+            while len(_FP_CACHE) > _FP_CACHE_MAX:
+                _FP_CACHE.popitem(last=False)
+            return dict(data) if data else None
+    finally:
+        if not lock.locked() and not getattr(lock, "_waiters", None):
+            _FP_LOCKS.pop(key, None)
 
 
 async def get_landscape_thumb(filename):
