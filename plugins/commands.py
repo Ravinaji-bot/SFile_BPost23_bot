@@ -37,7 +37,6 @@ from plugins.pretty_name import display_name, clean_caption, branded_name
 from plugins.channel import extract_media_info, build_post_caption, build_post_buttons, get_post_format
 from dreamxbotz.util.postcard import _send_post_poster_below, archive_and_delete_post
 from dreamxbotz.util.postbot import is_post_bot, bot_file_id
-from dreamxbotz.util.master import master_fill_for
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +61,7 @@ async def _deliver_file_raw(client, chat_id, files1, file_id, caption, btn, prot
     poster_cover = None
     if use_poster_thumb and is_video:
         try:
-            _fill = await master_fill_for(files1)          # same poster for every quality of this movie
-            poster_cover = await get_landscape_thumb(files1.file_name, master_name=(_fill or {}).get("name"))
+            poster_cover = await get_landscape_thumb(files1.file_name)
         except Exception as e:
             logger.warning(f"poster_thumb fetch failed: {e}")
             poster_cover = None
@@ -97,32 +95,21 @@ def _uname(client):
         return temp.U_NAME
 
 
-def make_caption(f, template, fill=None):
+def make_caption(f, template):
     """The caption of a delivered file - ONE function for every path (single file, Send All, fallback).
     Never raises and always returns a caption, so the file is ALWAYS sent (a bad template or a very odd
     file name can no longer stop a delivery). The brand tag is added to {file_name} only when the
     template does not already show it (render_caption)."""
     name = getattr(f, "file_name", None) or ""
     orig = getattr(f, "caption", None) or ""
-    cap = render_caption(template, name, orig, get_size(getattr(f, "file_size", 0) or 0), fill)
+    cap = render_caption(template, name, orig, get_size(getattr(f, "file_size", 0) or 0))
     if cap:
         return cap
     if not template:                                   # no template at all: the file's own caption (old behaviour)
         own = strip_bad_prefixes(orig)
         if own:
             return _html.escape(own)
-    return f"<b>{_html.escape(branded_name(name, orig, template, fill) or name)}</b>"
-
-
-async def make_caption_x(f, template):
-    """make_caption() + the details of the MASTER file of the same movie / season (year, audio languages,
-    subtitles that this file has not got itself). Never raises - on any problem it is the plain make_caption."""
-    fill = None
-    try:
-        fill = await master_fill_for(f)
-    except Exception as e:
-        logger.warning("master fill skipped: %s", e)
-    return make_caption(f, template, fill)
+    return f"<b>{_html.escape(branded_name(name, orig, template) or name)}</b>"
 
 
 async def _deliver_file(client, chat_id, files1, file_id, *args, **kwargs):
@@ -553,7 +540,7 @@ async def start(client, message):
                     cover = files1.cover
                     settings = await get_settings(int(grp_id))
                     DREAMX_CAPTION = await get_file_caption(settings.get('caption', CUSTOM_FILE_CAPTION))
-                    f_caption = await make_caption_x(files1, DREAMX_CAPTION)
+                    f_caption = make_caption(files1, DREAMX_CAPTION)
                     btn = await stream_buttons(message.from_user.id, file_id)
                     try:
                         msg = await _deliver_file(client, message.from_user.id, files1, file_id, f_caption, btn, settings.get('file_secure', PROTECT_CONTENT), settings.get('poster_thumb'), cover=cover)
@@ -640,7 +627,7 @@ async def start(client, message):
                 if details:
                     files1 = details[0]
                     DREAMX_CAPTION = await get_file_caption(settings.get('caption', CUSTOM_FILE_CAPTION))
-                    f_caption = await make_caption_x(files1, DREAMX_CAPTION)
+                    f_caption = make_caption(files1, DREAMX_CAPTION)
                     msg = await _deliver_file(client, message.from_user.id, files1, file_id, f_caption, btn, settings.get('file_secure', PROTECT_CONTENT), settings.get('poster_thumb'), cover=cover)
                 else:
                     # details lookup failed entirely — fall back to the raw send-then-edit-caption flow
@@ -659,7 +646,7 @@ async def start(client, message):
                                                   caption=getattr(msg, "caption", None),
                                                   file_size=getattr(file, "file_size", 0))
                     DREAMX_CAPTION = await get_file_caption(settings.get('caption', CUSTOM_FILE_CAPTION))
-                    f_caption = await make_caption_x(info_, DREAMX_CAPTION)
+                    f_caption = make_caption(info_, DREAMX_CAPTION)
                     await msg.edit_caption(f_caption, reply_markup=InlineKeyboardMarkup(btn))
                 _spawn(_countdown_delete(
                     client, message.from_user.id, msg,
@@ -675,7 +662,7 @@ async def start(client, message):
         cover = files.cover if files.cover else None
         settings = await get_settings(int(grp_id))
         DREAMX_CAPTION = await get_file_caption(settings.get('caption', CUSTOM_FILE_CAPTION))
-        f_caption = await make_caption_x(files, DREAMX_CAPTION)
+        f_caption = make_caption(files, DREAMX_CAPTION)
         btn = await stream_buttons(message.from_user.id, file_id)
         msg = await _deliver_file(client, message.from_user.id, files, file_id, f_caption, btn, settings.get('file_secure', PROTECT_CONTENT), settings.get('poster_thumb'), cover=cover)
         

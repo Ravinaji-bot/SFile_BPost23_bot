@@ -724,15 +724,8 @@ def add_episode_label(buf, filename):
 _FP_CACHE = OrderedDict()   # key -> (expires_at, result)
 _FP_LOCKS = {}              # key -> asyncio.Lock  (same title looked up at once = one TMDB trip)
 _FP_CACHE_MAX = 300
-_FP_TTL_OK = 2 * 3600       # a found poster is remembered 2 hours (a wrong match fixes itself sooner)
+_FP_TTL_OK = 6 * 3600       # a found poster is remembered 6 hours
 _FP_TTL_FAIL = 300          # a failed lookup only 5 minutes, so it is tried again soon
-
-
-def clear_poster_cache():
-    """Forget every remembered poster lookup (admin command /clearposter). Returns how many were forgotten."""
-    n = len(_FP_CACHE)
-    _FP_CACHE.clear()
-    return n
 
 
 async def find_poster(query, file=None, season=None, is_series=None):
@@ -781,7 +774,7 @@ async def find_poster(query, file=None, season=None, is_series=None):
             _FP_LOCKS.pop(key, None)
 
 
-async def get_landscape_thumb(filename, master_name=None):
+async def get_landscape_thumb(filename):
     """
     Fetches a landscape poster/backdrop image URL for the given filename (via TMDB).
 
@@ -790,15 +783,11 @@ async def get_landscape_thumb(filename, master_name=None):
     is being freshly uploaded. The only override that actually works for already-uploaded
     videos is the cover (video_cover) field, so this returns a plain image URL meant to be
     passed as cover= to send_video, not as thumb=.
-    master_name = the name of the MASTER file of this movie / season (dreamxbotz.util.master): the poster is
-    looked up with it, so every quality of the movie shows the same poster. The quality / episode label on
-    the image still comes from the file's own name.
     Returns None on any failure (caller should then fall back to the file's own cover/thumbnail).
     """
     try:
-        lookup = master_name or filename
-        title_guess = clean_filename(lookup) or lookup
-        imdb_data = await find_poster(title_guess, file=lookup)
+        title_guess = clean_filename(filename) or filename
+        imdb_data = await find_poster(title_guess, file=filename)
         if not imdb_data:
             return None
         img_url = imdb_data.get('backdrop') or (imdb_data.get('poster') if ALLOW_PORTRAIT_POSTER else None)
@@ -808,7 +797,7 @@ async def get_landscape_thumb(filename, master_name=None):
         from plugins.Dreamxfutures.Imdbposter import fetch_image
         buf = await fetch_image(img_url, (1280, 720))
         if buf is None:
-            return None   # download failed -> the file keeps its own cover (a raw url would have no watermark / label)
+            return img_url
         if not isinstance(buf, str):
             buf = add_episode_label(buf, filename)
             buf.name = "cover.jpg"

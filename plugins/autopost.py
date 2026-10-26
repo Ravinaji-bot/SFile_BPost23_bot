@@ -61,7 +61,6 @@ from plugins.file_caption import peek_file_caption, get_file_caption, standard_c
 from plugins.pretty_name import display_name, load_pretty_settings, clean_caption
 from plugins.channel import extract_media_info, _series_group_key
 from plugins.Dreamxfutures.Imdbposter import fetch_image
-from dreamxbotz.util.master import master_name, group_fill, fill_for_file
 from utils import find_poster, clean_filename, get_size, get_languages_html, add_episode_label, get_episode_label, extract_button
 
 logger = logging.getLogger(__name__)
@@ -307,13 +306,11 @@ def _prepare_files(files):
     return sorted(unique.values(), key=_sort_key)
 
 
-def _build_caption(f, fill=None):
+def _build_caption(f):
     name = f.get("n") or ""
     # same caption as every other video: name + VLC box (+ language box only when /langbox is ON)
-    # fill = details of the MASTER file of this collection (year / language / subtitles the file has not got)
     return standard_caption(name, f.get("c"), f.get("s") or 0,
-                            template=os.environ.get("AUTOPOST_CAPTION") or None,
-                            fill=fill_for_file(fill, name, f.get("c") or ""))
+                            template=os.environ.get("AUTOPOST_CAPTION") or None)
 
 
 async def _group_cover_base(qdoc):
@@ -326,14 +323,11 @@ async def _group_cover_base(qdoc):
     try:
         files = qdoc.get("files") or []
         first_name = (files[0].get("n") if files and isinstance(files[0], dict) else None) or None
-        first_name = master_name([(f.get("n") or "", f.get("c") or "") for f in files if isinstance(f, dict)], first_name)
         details = await find_poster(title, file=first_name, season=qdoc.get("season"), is_series=is_series) or {}
         # same rule as the PM cover (utils.get_landscape_thumb): a portrait poster only when ALLOW_PORTRAIT_POSTER is on
         url = details.get("backdrop") or (details.get("poster") if ALLOW_PORTRAIT_POSTER else None)
         if not url:
             return None
-        if "._V1_" in url and "media-amazon" in url:      # IMDb cover thumbnails are tiny - ask for the big one
-            url = url.split("._V1_")[0] + "._V1_SX1280.jpg"
         buf = await fetch_image(url, (1280, 720))
         if not buf or isinstance(buf, str):
             return None
@@ -355,15 +349,15 @@ async def _flood_safe(coro_factory):
     raise RuntimeError("too many FloodWaits")
 
 
-async def _send_file(bot, channel, f, cover_base, last=False, fill=None):
+async def _send_file(bot, channel, f, cover_base, last=False):
     """_send_file_raw + the log 'this file was sent to this channel' (so /autocycle and /autopost new never repeat it)."""
-    ok = await _send_file_raw(bot, channel, f, cover_base, last, fill)
+    ok = await _send_file_raw(bot, channel, f, cover_base, last)
     if ok:
         await db.posted_add(channel, f["id"])
     return ok
 
 
-async def _send_file_raw(bot, channel, f, cover_base, last=False, fill=None):
+async def _send_file_raw(bot, channel, f, cover_base, last=False):
     """True = sent, False = this file could not be sent (skipped).
     last=True: the LAST file of the collection (the sticker follows) -> 'View Audio, Subs & Story' button."""
     file_id = f["id"]
@@ -374,7 +368,7 @@ async def _send_file_raw(bot, channel, f, cover_base, last=False, fill=None):
     await get_file_caption()  # loads the in-bot caption into cache
     await load_switches()
     await load_pretty_settings()
-    caption = _build_caption(f, fill)
+    caption = _build_caption(f)
     is_video = f.get("t") == "video" or str(f.get("m") or "").startswith("video/")
     cover = f.get("cv")
     if is_video and cover_base:
@@ -432,7 +426,6 @@ async def _send_group(bot, q, qdoc, cfg, stats):
     key = qdoc["_id"]
     channel = cfg["series_ch"] if qdoc.get("tag") == "#SERIES" else cfg["movie_ch"]
     files = _prepare_files(qdoc.get("files", []))
-    fill = group_fill([(f.get("n") or "", f.get("c") or "") for f in files])   # master of this collection
     start = int(qdoc.get("sent", 0))
 
     cover_base = None
@@ -444,7 +437,7 @@ async def _send_group(bot, q, qdoc, cfg, stats):
     for idx in range(start, len(files)):
         if _state["stop"] or not await wait_for_window(bid, lambda: _state["stop"]):
             return "stopped"
-        ok = await _send_file(bot, channel, files[idx], cover_base, last=(idx == len(files) - 1), fill=fill)
+        ok = await _send_file(bot, channel, files[idx], cover_base, last=(idx == len(files) - 1))
         stats["files" if ok else "skipped_files"] += 1
         await q.update_one({"_id": key}, {"$set": {"sent": idx + 1}})
         await asyncio.sleep(cfg["delay"])
