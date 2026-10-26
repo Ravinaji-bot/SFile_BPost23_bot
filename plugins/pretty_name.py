@@ -46,7 +46,8 @@ LANGS = {
     "italian": "Italian", "portuguese": "Portuguese", "tagalog": "Tagalog", "bhojpuri": "Bhojpuri",
 }
 SOURCES = {s.lower(): s for s in ("WEB-DL", "WEBRip", "BluRay", "BRRip", "BDRip", "HDRip", "HDTV", "DVDRip",
-                                  "HDTC", "CAMRip", "PreDVD")}
+                                  "HDTC", "CAMRip", "PreDVD",
+                                  "HDCAM", "HDTS", "CAM", "TeleSync")}   # cam / telesync prints stay visible in the name
 OTTS = {"nf": "NF", "amzn": "AMZN", "dsnp": "DSNP", "zee5": "ZEE5", "iq": "iQ", "wetv": "WeTV", "viu": "VIU",
         "sonyliv": "SonyLIV", "sliv": "SonyLIV", "jc": "JC", "mx": "MX", "altb": "ALTBalaji", "hoichoi": "Hoichoi",
         "sunnxt": "SunNXT", "hulu": "Hulu", "hbo": "HBO", "atvp": "ATVP", "tvf": "TVF", "aha": "AHA",
@@ -74,7 +75,10 @@ _SUBS_WORDS = r"\b(?:e-?subs?|m-?subs?|subtitles?|subs?|dubbed|org|dual|audio|mu
 
 
 def _prepare(raw):
-    text = strip_bad_prefixes(raw)
+    # Telegram file names glue everything with "_": "Join_@xyz_Movie_2024" - make them words first so the
+    # promo / bad-word cleaning below sees "Join", "@xyz" ... (the tokenizer treats "_" as a space anyway)
+    text = strip_bad_prefixes((raw or "").replace("_", " "))
+    text = re.sub(r"^\s*(?:join|tg|telegram)[\s.\-:|]*(?=@)", "", text, flags=re.I)   # "Join.@chan.Movie.2024" (dots glue it into one word)
     text = strip_bad_words(text) or text                              # join / tg / movie / boxoffice ... ("ORIGINAL" is kept: ORG tag)
     text = re.sub(r"\s+", " ", text).strip()                         # new lines inside a name
     text = re.sub(r"^\s*(?:\[[^\]]*\]|@\w+|www\.\S+?\.\w{2,4})[\s\-_.]*", "", text)   # leading [Site] / @chan / www.x.com
@@ -133,9 +137,12 @@ def _subs_from_caption(caption):
     return ""
 
 
-def _parse(raw, org=True, caption=""):
+def _parse(raw, org=True, caption="", fill=None, _fields=None):
     """Clean release name built only from the parts worth keeping; None when the name has no year / season /
-    resolution to anchor on. Credits, release groups, audio codecs, bitrates, symbols are dropped."""
+    resolution to anchor on. Credits, release groups, audio codecs, bitrates, symbols are dropped.
+    fill    = details of the "master" file of the same movie / season (dreamxbotz.util.master). They only FILL
+              what this file has not got (year, language, subtitles) - what the file itself says always wins.
+    _fields = optional dict that receives the parsed details (used by master.py to compare the files)."""
     if not raw or not raw.strip():
         return None
     toks, ext = _prepare(raw)
@@ -214,6 +221,16 @@ def _parse(raw, org=True, caption=""):
             langs = from_caption
     if not subs:
         subs = _subs_from_caption(caption)
+    if fill:                                                          # master file: fill only what is missing
+        if not year and fill.get("year"):
+            year = str(fill["year"])
+        if not langs and fill.get("langs"):
+            langs = list(fill["langs"])
+        if not subs and fill.get("subs"):
+            subs = fill["subs"]
+    if _fields is not None:
+        _fields.update(title=title, year=year, season=season, eps=eps, res=res, ott=ott, src=src, codec=codec,
+                       subs=subs, langs=list(langs), multi=multi)
     if not (year or season or res):
         return None
     out = [f"{title} ({year})" if year else title, season, ep_txt, combined, *edition, res, bit10, ott,
@@ -234,10 +251,10 @@ def pretty_name(raw, org=True, caption=""):
     return _parse(raw, org, caption) or raw
 
 
-def _name_from_caption(caption, org=True):
+def _name_from_caption(caption, org=True, fill=None):
     """First caption line (of the first 4) that is a real release name, cleaned. None when there is none."""
     for line in _caption_lines(caption)[:4]:
-        p = _parse(line, org, caption)
+        p = _parse(line, org, caption, fill)
         if p:
             return p
     return None
@@ -286,7 +303,7 @@ def clean_caption(caption, template=""):
     return caption
 
 
-def _display_name(raw, caption=None):
+def _display_name(raw, caption=None, fill=None):
     """The name to show in a caption / button.
     1) the stored file name, pretty-printed, when it is a real release name (old behaviour, unchanged);
     2) otherwise the file's original caption (first real name line, cleaned) - for merged files whose
@@ -295,9 +312,9 @@ def _display_name(raw, caption=None):
     raw = raw or ""
     if _STATE["on"]:
         try:
-            p = _parse(raw, _STATE["org"], caption or "")
+            p = _parse(raw, _STATE["org"], caption or "", fill)
             if not p and caption:
-                p = _name_from_caption(caption, _STATE["org"])
+                p = _name_from_caption(caption, _STATE["org"], fill)
             if p:
                 return p
             if caption and _is_junk_name(raw):
@@ -310,9 +327,9 @@ def _display_name(raw, caption=None):
     return clean_filename(raw)
 
 
-def display_name(raw, caption=None):
+def display_name(raw, caption=None, fill=None):
     """_display_name() + the rule "540p is always 480p" (also inside names that were not pretty-printed)."""
-    return norm_res(_display_name(raw, caption))
+    return norm_res(_display_name(raw, caption, fill))
 
 
 _EXT_RE = re.compile(r"(\.(?:mkv|mp4|avi|mov|webm|m4v|ts|wmv|flv|zip|rar|7z|srt))$", re.IGNORECASE)
@@ -355,7 +372,7 @@ def brand_name(name, emoji=True, tag=True):
     return stem + ext
 
 
-def branded_name(raw, caption=None, template=None):
+def branded_name(raw, caption=None, template=None, fill=None):
     """display_name() + the brand (emoji in front, tag before the extension) - for captions.
     template = the caption template that will be filled: if it already carries the tag, the tag is not added twice."""
-    return brand_name(display_name(raw, caption), tag=not template_has_brand(template))
+    return brand_name(display_name(raw, caption, fill), tag=not template_has_brand(template))

@@ -2,15 +2,22 @@
 sent right above the normal search result when a user searches in the bot PM."""
 import asyncio
 import logging
+import os
 from dreamxbotz.util.autoclean import keep
 from pyrogram import enums
 from pyrogram.errors import FloodWait
 from pyrogram.types import LinkPreviewOptions
 from info import TMDB_POSTER, RESULT_ARCHIVE_CHANNEL, POST_ARCHIVE_BEFORE, POSTCARD_LANDSCAPE, POSTCARD_PREVIEW
 from utils import find_poster, temp
+from dreamxbotz.util.master import master_name
 from plugins.channel import extract_media_info, build_post_caption, build_post_buttons, get_post_format, preview_url
 
 logger = logging.getLogger(__name__)
+
+try:
+    _MAX_SEASONS = max(1, int(os.environ.get("POSTCARD_MAX_SEASONS", "6")))   # cards sent for one web series
+except ValueError:
+    _MAX_SEASONS = 6
 
 
 async def _send_post_poster_below(client, chat_id, poster, caption, post_btn, spoiler=False):
@@ -94,14 +101,26 @@ async def send_search_postcard(client, chat_id, files, tenbit=False):
                          key=lambda x: int(x) if str(x).isdigit() else 0)
         if len(seasons) > 1:
             first = None
-            for sn in seasons[:4]:
+            for i, sn in enumerate(seasons[:_MAX_SEASONS]):
+                if i:
+                    await asyncio.sleep(0.8)      # a pause between cards (Telegram flood limit in a private chat)
                 part = [f for f in files if _season_of(f) == sn]
                 sent_one = await send_search_postcard(client, chat_id, part, tenbit)
                 first = first or sent_one
+            rest = seasons[_MAX_SEASONS:]
+            if rest:                                # the seasons that got no card are not lost silently
+                try:
+                    names = ", ".join(f"S{int(s):02d}" if str(s).isdigit() else str(s) for s in rest)
+                    await client.send_message(chat_id, f"➕ {len(rest)} more season(s) not shown as a card: {names}. "
+                                                       f"Search with the season number to see them.")
+                except Exception:
+                    pass
             return first
         imdb_data = None
         try:
             first_name = movie_files[0]["filename"]
+            # the poster is looked up with the MASTER file of the group (the one with the fullest details)
+            first_name = master_name([(f.file_name, getattr(f, "caption", None) or "") for f in files], first_name)
             imdb_data = await find_poster(base_name, file=first_name)
         except Exception:
             imdb_data = None

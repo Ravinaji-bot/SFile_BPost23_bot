@@ -62,7 +62,7 @@ def peek_file_caption(default=None):
     return _CACHE["value"] or default
 
 
-def render_caption(template, file_name, orig_caption, size_text):
+def render_caption(template, file_name, orig_caption, size_text, fill=None):
     """Fills a caption template. ONE place for every delivery path (PM, Send All, fallback, autopost, ccopy ...).
     * {file_name} is the pretty branded name, HTML-escaped. If the template already shows the brand tag itself
       (e.g. '{file_name}</a>➥ 𝑫𝒓𝒂𝒈𝒐𝒏𝑭𝒊𝒓𝒆𝑾𝒐𝒓𝒍𝒅') the bot does NOT add its own tag into the name -> the tag shows only once.
@@ -73,7 +73,7 @@ def render_caption(template, file_name, orig_caption, size_text):
         return None
     from plugins.pretty_name import branded_name, clean_caption
     try:
-        title = html.escape(branded_name(file_name or "", orig_caption, template) or file_name or "")
+        title = html.escape(branded_name(file_name or "", orig_caption, template, fill) or file_name or "")
         fcap = html.escape(clean_caption(strip_bad_prefixes(orig_caption or "") or "", template) or "")
         return template.format(file_name=title, file_size=size_text or "", file_caption=fcap)
     except Exception as e:
@@ -204,13 +204,13 @@ def add_caption_boxes(caption, file_name, orig_caption, is_video=True):
     return out if len(out) <= 1024 else caption
 
 
-def standard_caption(file_name, orig_caption, size_bytes, template=None, is_video=True):
+def standard_caption(file_name, orig_caption, size_bytes, template=None, is_video=True, fill=None):
     """The caption every video gets: template ({file_name} pretty, {file_size}, {file_caption}) + boxes."""
     from plugins.pretty_name import branded_name
     name = file_name or ""
     tmpl = template or peek_file_caption(CUSTOM_FILE_CAPTION)
-    cap = render_caption(tmpl, name, orig_caption, get_size(size_bytes or 0))
-    title = html.escape(branded_name(name, orig_caption, tmpl) or name)
+    cap = render_caption(tmpl, name, orig_caption, get_size(size_bytes or 0), fill)
+    title = html.escape(branded_name(name, orig_caption, tmpl, fill) or name)
     if not cap:
         cap = f"<b>{title}</b>"
     cap = add_caption_boxes(cap, name, orig_caption, is_video)
@@ -275,3 +275,13 @@ async def videocaption_cmd(bot: Client, message: Message):
     await load_switches()
     await _switch_cmd(message, _K_VCAP, "🎞 Standard video caption in /ccopy and /autoforward", "vcap",
                       "\nON = the copied videos get the bot caption (name + VLC box + your text). OFF = the old /ccopy caption on|off setting.")
+
+
+@Client.on_message(filters.command("clearposter") & filters.user(ADMINS))
+async def clear_poster_cmd(bot: Client, message: Message):
+    """Wrong poster picked and remembered? This forgets all remembered poster lookups at once."""
+    from utils import clear_poster_cache
+    from dreamxbotz.util.master import clear_master_cache
+    n = clear_poster_cache()
+    m = clear_master_cache()
+    await message.reply_text(f"✅ Poster cache cleared ({n} remembered lookups, {m} master files forgotten).")

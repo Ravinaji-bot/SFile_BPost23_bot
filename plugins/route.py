@@ -71,7 +71,8 @@ async def watch_handler(request: web.Request):
         raise web.HTTPInternalServerError(text="Internal server error")
 _LP_ALLOWED_HOSTS = ("tmdb.org", "media-amazon.com", "ssl-images-amazon.com")
 _LP_CACHE = OrderedDict()
-_LP_CACHE_MAX = 200
+_LP_CACHE_MAX = 60                 # images
+_LP_CACHE_MAX_BYTES = 30 * 1024 * 1024   # and at most ~30 MB in total
 
 
 def _lp_host_ok(url: str) -> bool:
@@ -103,7 +104,8 @@ async def landscape_preview_handler(request: web.Request):
             raise web.HTTPFound(src)
         data = buf.getvalue()
         _LP_CACHE[src] = data
-        while len(_LP_CACHE) > _LP_CACHE_MAX:
+        while len(_LP_CACHE) > _LP_CACHE_MAX or (
+                len(_LP_CACHE) > 1 and sum(len(v) for v in _LP_CACHE.values()) > _LP_CACHE_MAX_BYTES):
             _LP_CACHE.popitem(last=False)
     else:
         _LP_CACHE.move_to_end(src)
