@@ -9,6 +9,7 @@ from pyrogram.types import LinkPreviewOptions
 from info import TMDB_POSTER, RESULT_ARCHIVE_CHANNEL, POST_ARCHIVE_BEFORE, POSTCARD_LANDSCAPE, POSTCARD_PREVIEW
 from utils import find_poster, temp
 from plugins.channel import extract_media_info, build_post_caption, build_post_buttons, get_post_format, preview_url
+from database.users_chats_db import db
 
 logger = logging.getLogger(__name__)
 
@@ -89,10 +90,23 @@ async def send_search_postcard(client, chat_id, files, tenbit=False):
         if not movie_files:
             return None
         base_name = base_name or "Unknown"
+        # PM search card == channel auto-post card: when the channel already has a saved record
+        # (db.movie_updates, key = base_name; all seasons of a show share it) build the card from
+        # THAT record, so both cards show the same qualities, episodes, genres and OTT.
+        # Not used for tenbit (ccopy) cards - those keep using the files they were given.
+        db_doc = None
+        if not tenbit:
+            try:
+                db_doc = await db.movie_updates.find_one({"_id": base_name})
+                if db_doc and not db_doc.get("files"):
+                    db_doc = None
+            except Exception as e:
+                logger.warning("postcard: could not load saved channel record: %s", e)
+                db_doc = None
         # a web series: every season gets its own card (the first card is returned, the others are sent after it)
         seasons = sorted({f["season"] for f in movie_files if f["tag"] == "#SERIES" and f["season"] is not None},
                          key=lambda x: int(x) if str(x).isdigit() else 0)
-        if len(seasons) > 1:
+        if len(seasons) > 1 and not db_doc:
             first = None
             for sn in seasons[:4]:
                 part = [f for f in files if _season_of(f) == sn]
@@ -100,22 +114,28 @@ async def send_search_postcard(client, chat_id, files, tenbit=False):
                 first = first or sent_one
             return first
         imdb_data = None
-        try:
-            first_name = movie_files[0]["filename"]
-            imdb_data = await find_poster(base_name, file=first_name)
-        except Exception:
-            imdb_data = None
-        imdb_data = imdb_data or {}
-        movie_doc = {
-            "files": movie_files,
-            "genres": imdb_data.get("genres") or "N/A",
-            "year": imdb_data.get("year"),
-        }
+        poster = db_doc.get("poster_url") if db_doc else None
+        if not db_doc or not poster:
+            try:
+                first_name = movie_files[0]["filename"]
+                imdb_data = await find_poster(base_name, file=first_name)
+            except Exception:
+                imdb_data = None
+            imdb_data = imdb_data or {}
+            poster = (imdb_data.get("backdrop") if POSTCARD_LANDSCAPE else None) or imdb_data.get("poster")
+        if db_doc:
+            movie_doc = db_doc
+        else:
+            movie_doc = {
+                "files": movie_files,
+                "genres": imdb_data.get("genres") or "N/A",
+                "year": imdb_data.get("year"),
+            }
         fmt = await get_post_format(temp.ME)
         caption = build_post_caption(movie_doc, base_name, fmt, tenbit)
         post_btn = build_post_buttons(fmt, movie_doc, tenbit)
         sent = await _send_post_poster_below(
-                        client, chat_id, (imdb_data.get("backdrop") if POSTCARD_LANDSCAPE else None) or imdb_data.get("poster"), caption, post_btn, fmt.get("spoiler", False))
+                        client, chat_id, poster, caption, post_btn, fmt.get("spoiler", False))
         if sent is None:
             sent = await client.send_message(
                 chat_id=chat_id, text=caption, reply_markup=post_btn,

@@ -1328,9 +1328,12 @@ def _build_post_caption(movie_doc, base_name, fmt=None, tenbit=False, names=Fals
         wm = str(watermark)
         if "<" not in wm:
             wm = f"<a href='{POST_WATERMARK_LINK}'>{_sans_bold(wm)}</a>"
-        lines += ["╔═════════════════════╗",
-                  f"    𝑷𝒐𝒘𝒆𝒓𝒆𝒅 𝒃𝒚 ➥ {wm}      ",
-                  "╚═════════════════════╝"]
+        if header_box:   # Header box ON -> "Powered by" also sits in a Telegram quote-box
+            lines += [f"<blockquote>𝑷𝒐𝒘𝒆𝒓𝒆𝒅 𝒃𝒚 ➥「 {wm} 」</blockquote>"]
+        else:
+            lines += ["╔═════════════════════╗",
+                      f"    𝑷𝒐𝒘𝒆𝒓𝒆𝒅 𝒃𝒚 ➥ {wm}      ",
+                      "╚═════════════════════╝"]
 
     caption = "\n".join(lines).strip()
     return f"<b>{caption}</b>"   # the whole card is always bold
