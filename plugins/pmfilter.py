@@ -121,6 +121,134 @@ def _title_key(t):
     return t.replace(" ", "")
 
 
+# ---------------------------------------------------------------------------------------------
+# Movie-list clean-up: files whose NAME is an abbreviation / typo of the real title (Sm2, Sm3, Tasm1,
+# Amz Spider Man, Spider Man Hc ...) come into a search through their caption and would otherwise
+# get a button of their own. They are merged into the real movie (same year) or hidden.
+# ---------------------------------------------------------------------------------------------
+_SEARCH_NOISE = {
+    "the", "hindi", "english", "tamil", "telugu", "malayalam", "kannada", "bengali", "punjabi", "marathi",
+    "urdu", "dual", "audio", "multi", "dubbed", "dub", "sub", "subs", "hd", "uhd", "4k", "webdl", "web", "dl",
+    "hevc", "x264", "x265", "bluray", "brrip", "hdrip", "season", "episode", "ep", "complete", "movie", "series",
+}
+
+
+def _search_words(search):
+    words = re.sub(r"[^a-z0-9]+", " ", (search or "").lower()).split()
+    out = []
+    for w in words:
+        if w in _SEARCH_NOISE:
+            continue
+        if re.fullmatch(r"(?:19|20)\d{2}", w):                                 # a year typed by the user
+            continue
+        if re.fullmatch(r"s\d{1,3}(?:e\d{1,4})?|e\d{1,4}|\d{3,4}p", w):         # s07 / s07e07 / e07 / 1080p
+            continue
+        out.append(w)
+    return out
+
+
+def _is_subseq(a, b):
+    it = iter(b)
+    return all(ch in it for ch in a)
+
+
+def _title_words(t):
+    return re.sub(r"[^a-z0-9]+", " ", (t or "").lower()).split()
+
+
+def _same_movie_alias(t1, t2):
+    """'Amz Spider Man' ~ 'The Amazing Spider Man', 'Spider Man Hc' ~ 'Spider Man Homecoming':
+    same number of words, and every word is equal or a shortened form (letters in order, same first letter)."""
+    a = [w for w in _title_words(t1) if w != "the"]
+    b = [w for w in _title_words(t2) if w != "the"]
+    if not a or len(a) != len(b):
+        return False
+    for x, y in zip(a, b):
+        if x == y:
+            continue
+        if x.isdigit() or y.isdigit() or x[0] != y[0]:
+            return False
+        if not (_is_subseq(x, y) or _is_subseq(y, x)):
+            return False
+    return True
+
+
+def _is_initialism(short, full):
+    """'Sm2' = Spider Man 2, 'Tasm1' = The Amazing Spider Man (1), 'Smh' = Spider Man Homecoming."""
+    k = re.sub(r"[^a-z0-9]+", "", (short or "").lower())
+    if len(k) < 2:
+        return False
+    words = _title_words(full)
+    for ws in (words, [w for w in words if w != "the"]):
+        init = "".join(w if w.isdigit() else w[0] for w in ws)
+        if init and (k == init or (k.startswith(init) and k[len(init):].isdigit())):
+            return True
+    return False
+
+
+def _absorb(main, extra, prefer_extra_title=False):
+    if prefer_extra_title:
+        main["title"] = extra["title"]
+        main["files"] = list(extra["files"]) + list(main["files"])   # clean-title files first (the card title comes from the first file)
+    else:
+        main["files"] = list(main["files"]) + list(extra["files"])
+    main["langs"] = sorted(set(main["langs"]) | set(extra["langs"]), key=lambda x: x.lower())
+
+
+def _clean_movie_list(movies, search):
+    """Returns the movie buttons without the 'kachra' entries. Falls back to the untouched list when unsure."""
+    try:
+        words = _search_words(search)
+        if not movies or not words:
+            return movies
+        squash = "".join(words)
+
+        def _matches(mv):
+            key = _title_key(mv["title"])
+            return squash in key or all(w in key for w in words)
+
+        kept = [m for m in movies if _matches(m)]
+        if not kept:
+            return movies          # nothing matches the typed words: show everything as before
+        others = [m for m in movies if not _matches(m)]
+
+        merged = []
+        for mv in kept:
+            target = None
+            if mv["season"] is None and mv["year"]:
+                for t in merged:
+                    if t["season"] is None and t["year"] == mv["year"] and _same_movie_alias(t["title"], mv["title"]):
+                        target = t
+                        break
+            if target is None:
+                merged.append(mv)
+            else:
+                _absorb(target, mv, prefer_extra_title=len(mv["title"]) > len(target["title"]))
+
+        for o in others:
+            if o["season"] is not None or not o["year"]:
+                continue
+            for t in merged:
+                if t["season"] is None and t["year"] == o["year"] and _is_initialism(o["title"], t["title"]):
+                    _absorb(t, o)
+                    break
+            # a file that is neither the real title nor its short form is not shown
+        return merged
+    except Exception as e:
+        logger.warning("movie list clean-up skipped: %s", e)
+        return movies
+
+
+def _result_card_on(settings, message):
+    """The poster-style 'Select your Movie/Series' list is ALWAYS on in the bot's PM, and follows the setting in groups."""
+    try:
+        if message.chat.type == enums.ChatType.PRIVATE:
+            return True
+    except Exception:
+        pass
+    return bool(settings.get('result_card'))
+
+
 def _group_files_by_movie(files):
     """Groups search-result files into movies: same title + year (+ season for series).
     Inside one title+year, files whose audio languages never overlap are split into separate movies
@@ -1771,7 +1899,7 @@ async def auto_filter(client, msg, spoll=False):
                     search = _no_and
                 search = re.sub(r"\s+", " ", search.replace("'", " ")).strip()   # "ocean's" -> "ocean s" (file names are saved like that)
                 settings = await get_settings(message.chat.id)
-                if settings.get('result_card'):
+                if _result_card_on(settings, message):
                     _sq = _season_only_query(search)
                     if _sq:
                         search = _sq   # "game of thrones s07e07" -> whole season S07
@@ -1825,7 +1953,7 @@ async def auto_filter(client, msg, spoll=False):
         post_msg = None
         if PM_POST_FIRST and message.chat.type == enums.ChatType.PRIVATE:
             post_msg = await send_search_postcard(client, message.chat.id, files)
-        if settings.get('result_card'):
+        if _result_card_on(settings, message):
             user_first = message.from_user.first_name if message.from_user else "Tʜᴇʀᴇ"
             card_title = (shown_search or search).strip().title() if (shown_search or search) else display_name(files[0].file_name, files[0].caption)
             # whole card text is bold; names are HTML-escaped so a "<" in a name can't break the card
@@ -1845,6 +1973,7 @@ async def auto_filter(client, msg, spoll=False):
                 except Exception as e:
                     logger.warning("card: could not load all matches, using the first page: %s", e)
                 movies = _group_files_by_movie(all_files)
+                movies = _clean_movie_list(movies, search)
                 if season_wanted is not None:
                     # S07E07 / episode typed: only the season button (S07), never the single episode
                     only = [mv for mv in movies if str(mv["season"]).isdigit() and int(mv["season"]) == season_wanted]
